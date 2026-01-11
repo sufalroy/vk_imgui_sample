@@ -1,0 +1,73 @@
+# Build directories
+build/
+out/
+cmake-build-*/
+
+# Editor and IDE files
+.idea/
+.vscode/*
+!.vscode/settings.json
+!.vscode/tasks.json
+!.vscode/launch.json
+!.vscode/extensions.json
+.vs
+*.swp
+*~
+.DS_Store
+
+# Compiled Object files
+*.o
+*.obj
+
+# Precompiled Headers
+*.gch
+*.pch
+
+# Compiled Dynamic libraries
+*.so
+*.dylib
+*.dll
+
+# Compiled Static libraries
+*.a
+*.lib
+
+# Executables
+*.exe
+*.out
+*.app
+
+# CMake generated files
+CMakeCache.txt
+CMakeFiles/
+CMakeScripts/
+Testing/
+Makefile
+cmake_install.cmake
+install_manifest.txt
+compile_commands.json
+CTestTestfile.cmake
+
+# Dependency cache directories
+.cpm-cache
+
+# Debugging files
+*.dSYM/
+*.su
+*.idb
+*.pdb
+
+# Code coverage
+*.gcda
+*.gcno
+*.gcov
+coverage/
+
+# Profiling
+gmon.out
+callgrind.out*
+
+# Version control
+.git/
+.hg/
+.svn/

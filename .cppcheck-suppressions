@@ -1,0 +1,7 @@
+*:external/*
+*:imgui/*
+*:glfw/*
+
+unmatchedSuppression
+missingIncludeSystem
+unusedFunction:*test*.cpp
