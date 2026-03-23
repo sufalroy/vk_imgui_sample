@@ -1,141 +1,120 @@
-﻿cmake_minimum_required(VERSION 3.27 FATAL_ERROR)
+﻿cmake_minimum_required(VERSION 3.27)
 
 project(VulkanImGuiSample
-    VERSION 1.0.0
-    DESCRIPTION "Vulkan ImGui Sample Application"
+    VERSION 0.1.0
+    DESCRIPTION "Vulkan + ImGui sample application"
     LANGUAGES CXX
 )
 
 set(CMAKE_CXX_STANDARD 23)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
-set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
-set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin)
-set(CMAKE_LIBRARY_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/lib)
-set(CMAKE_ARCHIVE_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/lib)
+set(CMAKE_RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin")
+set(CMAKE_LIBRARY_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/lib")
+set(CMAKE_ARCHIVE_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/lib")
+set(CMAKE_EXPORT_COMPILE_COMMANDS  ON)
 
-set_property(GLOBAL PROPERTY USE_FOLDERS ON)
+set_property(GLOBAL PROPERTY USE_FOLDERS              ON)
 set_property(GLOBAL PROPERTY PREDEFINED_TARGETS_FOLDER "CMake")
-
-option(ENABLE_STATIC_ANALYZERS "Enable static analyzers" ON)
-option(ENABLE_HARDENING "Enable compiler hardening" ON)
-option(ENABLE_SANITIZERS "Enable sanitizers" OFF)
-option(ENABLE_TSAN "Enable ThreadSanitizer" OFF)
-option(ENABLE_MSAN "Enable MemorySanitizer" OFF)
-option(ENABLE_IPO "Enable IPO/LTO" ON)
-option(ENABLE_PCH "Enable precompiled headers" ON)
-
-if((ENABLE_SANITIZERS AND ENABLE_TSAN) OR (ENABLE_SANITIZERS AND ENABLE_MSAN) OR (ENABLE_TSAN AND ENABLE_MSAN))
-    message(FATAL_ERROR "Only one sanitizer type can be enabled at a time")
-endif()
+ 
 
 list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/cmake")
 
-include(cmake/CPM.cmake)
-include(cmake/CompilerWarnings.cmake)
-include(cmake/Hardening.cmake)
-include(cmake/Sanitizers.cmake)
-include(cmake/StaticAnalyzers.cmake)
-
-find_package(Vulkan 1.4.309 REQUIRED COMPONENTS glslc)
-if(NOT Vulkan_FOUND)
-    message(FATAL_ERROR "Vulkan SDK not found")
+option(ENABLE_CPP20_MODULE       "Use Vulkan C++20 module instead of headers"      OFF)
+option(ENABLE_WARNINGS_AS_ERRORS "Treat compiler warnings as errors"               ON)
+option(ENABLE_HARDENING          "Enable security hardening flags"                  ON)
+option(ENABLE_SANITIZERS         "Enable AddressSanitizer + UBSanitizer"           ON)
+option(ENABLE_TSAN               "Enable ThreadSanitizer (Clang/GCC only)"         OFF)
+option(ENABLE_MSAN               "Enable MemorySanitizer (Clang only)"             OFF)
+option(ENABLE_STATIC_ANALYZERS   "Enable clang-tidy / cppcheck / MSVC /analyze"   ON)
+option(ENABLE_IPO                "Enable interprocedural optimisation (LTO)"        ON)
+option(ENABLE_PCH                "Enable precompiled headers"                       ON)
+ 
+if((ENABLE_SANITIZERS AND ENABLE_TSAN)
+        OR (ENABLE_SANITIZERS AND ENABLE_MSAN)
+        OR (ENABLE_TSAN AND ENABLE_MSAN))
+    message(FATAL_ERROR
+        "Only one sanitizer group can be enabled at a time "
+        "(ENABLE_SANITIZERS / ENABLE_TSAN / ENABLE_MSAN)")
 endif()
 
-CPMAddPackage(
-    NAME glfw
-    GITHUB_REPOSITORY glfw/glfw
-    GIT_TAG 3.4
-    OPTIONS
-        "GLFW_BUILD_EXAMPLES OFF"
-        "GLFW_BUILD_TESTS OFF"
-        "GLFW_BUILD_DOCS OFF"
-        "GLFW_INSTALL ON"
-        "GLFW_VULKAN_STATIC OFF"
-        "GLFW_USE_WAYLAND OFF"
+include(CompilerWarnings)
+include(Hardening)
+include(Sanitizers)
+include(StaticAnalyzers)
+
+if(ENABLE_IPO)
+    include(CheckIPOSupported)
+    check_ipo_supported(RESULT _ipo_ok OUTPUT _ipo_msg)
+    if(NOT _ipo_ok)
+        message(WARNING "IPO/LTO not supported: ${_ipo_msg}")
+        set(ENABLE_IPO OFF)
+    else()
+        message(STATUS "IPO/LTO: supported")
+    endif()
+endif()
+
+find_package(Vulkan 1.4 REQUIRED)
+ 
+find_program(SLANGC_EXECUTABLE slangc
+    HINTS "$ENV{VULKAN_SDK}/Bin"
+    REQUIRED
 )
+message(STATUS "slangc: ${SLANGC_EXECUTABLE}")
 
+include(Dependencies.cmake)
 
-CPMAddPackage(
-    NAME imgui
-    GITHUB_REPOSITORY ocornut/imgui
-    GIT_TAG docking
-    DOWNLOAD_ONLY YES
+set(SHADER_SRC "${CMAKE_CURRENT_SOURCE_DIR}/assets/shaders/triangle.slang")
+set(SHADER_SPV "${CMAKE_CURRENT_SOURCE_DIR}/assets/shaders/triangle.spv")
+
+add_custom_command(
+    OUTPUT  "${SHADER_SPV}"
+    COMMAND "${SLANGC_EXECUTABLE}"
+            "${SHADER_SRC}"
+            -target              spirv
+            -profile             spirv_1_4
+            -emit-spirv-directly
+            -fvk-use-entrypoint-name
+            -entry vertMain
+            -entry fragMain
+            -o "${SHADER_SPV}"
+    DEPENDS "${SHADER_SRC}"
+    COMMENT "slangc: triangle.slang -> triangle.spv"
+    VERBATIM
 )
-
-if(imgui_ADDED)
-    add_library(imgui STATIC
-        ${imgui_SOURCE_DIR}/imgui.cpp
-        ${imgui_SOURCE_DIR}/imgui_demo.cpp
-        ${imgui_SOURCE_DIR}/imgui_draw.cpp
-        ${imgui_SOURCE_DIR}/imgui_tables.cpp
-        ${imgui_SOURCE_DIR}/imgui_widgets.cpp
-        ${imgui_SOURCE_DIR}/backends/imgui_impl_glfw.cpp
-        ${imgui_SOURCE_DIR}/backends/imgui_impl_vulkan.cpp
-    )
-    
-    target_include_directories(imgui PUBLIC
-        ${imgui_SOURCE_DIR}
-        ${imgui_SOURCE_DIR}/backends
-    )
-    
-    target_link_libraries(imgui PUBLIC Vulkan::Vulkan glfw)
-    
-    target_compile_definitions(imgui PUBLIC
-        IMGUI_DISABLE_OBSOLETE_FUNCTIONS
-        IMGUI_DISABLE_OBSOLETE_KEYIO
-    )
-    
-    target_compile_options(imgui PRIVATE
-        $<$<CXX_COMPILER_ID:MSVC>:/W0>
-        $<$<NOT:$<CXX_COMPILER_ID:MSVC>>:-w>
-    )
-    
-    set_target_properties(imgui PROPERTIES
-        FOLDER "External"
-        CXX_STANDARD 20
-        POSITION_INDEPENDENT_CODE ON
-    )
-endif()
-
-if(TARGET glfw)
-    set_target_properties(glfw PROPERTIES FOLDER "External")
-    target_compile_options(glfw PRIVATE
-        $<$<CXX_COMPILER_ID:MSVC>:/W0>
-        $<$<NOT:$<CXX_COMPILER_ID:MSVC>>:-w>
-    )
-endif()
+add_custom_target(vk_shaders DEPENDS "${SHADER_SPV}")
 
 add_executable(${PROJECT_NAME} src/main.cpp)
-
+ 
+add_dependencies(${PROJECT_NAME} vk_shaders)
+ 
 target_include_directories(${PROJECT_NAME} PRIVATE
-    ${CMAKE_CURRENT_SOURCE_DIR}/src
-    ${CMAKE_CURRENT_SOURCE_DIR}/include
+    "${CMAKE_CURRENT_SOURCE_DIR}/src"
+    "${CMAKE_CURRENT_SOURCE_DIR}/include"
 )
 
-target_link_libraries(${PROJECT_NAME} PRIVATE Vulkan::Vulkan glfw imgui)
-
+target_link_libraries(${PROJECT_NAME} PRIVATE
+    Vulkan::cppm
+    glfw
+    imgui
+    glm::glm
+)
+ 
 target_compile_definitions(${PROJECT_NAME} PRIVATE
-    VK_USE_PLATFORM_WIN32_KHR
-    VULKAN_HPP_DISPATCH_LOADER_DYNAMIC=1
-    VULKAN_HPP_NO_CONSTRUCTORS
-    VULKAN_HPP_NO_SPACESHIP_OPERATOR
+    VULKAN_HPP_NO_EXCEPTIONS
+    VULKAN_HPP_HANDLE_ERROR_OUT_OF_DATE_AS_SUCCESS 
+    $<$<PLATFORM_ID:Windows>:VK_USE_PLATFORM_WIN32_KHR>
+    $<$<PLATFORM_ID:Windows>:NOMINMAX>
+    $<$<PLATFORM_ID:Windows>:WIN32_LEAN_AND_MEAN>
+    $<$<PLATFORM_ID:Windows>:VC_EXTRALEAN>
     $<$<CONFIG:Debug>:DEBUG_BUILD>
-    $<$<CONFIG:Debug>:VULKAN_HPP_ASSERT=assert>
     $<$<CONFIG:Release>:NDEBUG>
-    NOMINMAX
-    WIN32_LEAN_AND_MEAN
-    VC_EXTRALEAN
     PROJECT_NAME="${PROJECT_NAME}"
     PROJECT_VERSION="${PROJECT_VERSION}"
+    $<$<BOOL:${ENABLE_CPP20_MODULE}>:USE_CPP20_MODULES=1>
 )
-
-set_target_properties(${PROJECT_NAME} PROPERTIES
-    VS_DEBUGGER_WORKING_DIRECTORY "${CMAKE_RUNTIME_OUTPUT_DIRECTORY}"
-    WIN32_EXECUTABLE $<CONFIG:Release>
-)
-
+ 
 if(ENABLE_PCH)
     target_precompile_headers(${PROJECT_NAME} PRIVATE
         <algorithm>
@@ -143,56 +122,67 @@ if(ENABLE_PCH)
         <cstddef>
         <cstdint>
         <expected>
+        <filesystem>
+        <format>
+        <fstream>
         <functional>
         <limits>
-        <memory>
         <optional>
+        <print>
         <ranges>
         <span>
-        <stdexcept>
         <string>
         <string_view>
+        <unordered_set>
         <vector>
     )
 endif()
-
-if(ENABLE_IPO AND NOT CMAKE_BUILD_TYPE STREQUAL "Debug")
-    include(CheckIPOSupported)
-    check_ipo_supported(RESULT ipo_supported OUTPUT ipo_error)
-    if(ipo_supported)
-        set_target_properties(${PROJECT_NAME} PROPERTIES INTERPROCEDURAL_OPTIMIZATION TRUE)
-    endif()
+ 
+if(ENABLE_IPO)
+    set_target_properties(${PROJECT_NAME} PROPERTIES
+        INTERPROCEDURAL_OPTIMIZATION            TRUE   # Release / RelWithDebInfo
+        INTERPROCEDURAL_OPTIMIZATION_DEBUG      FALSE  # Never LTO in Debug
+        INTERPROCEDURAL_OPTIMIZATION_MINSIZEREL TRUE
+    )
 endif()
-
-set_project_warnings(${PROJECT_NAME})
+ 
+set_project_warnings(${PROJECT_NAME} "${ENABLE_WARNINGS_AS_ERRORS}")
 set_project_hardening(${PROJECT_NAME})
-
-if(ENABLE_SANITIZERS OR ENABLE_TSAN OR ENABLE_MSAN)
-    enable_sanitizers(${PROJECT_NAME})
-endif()
-
-if(ENABLE_STATIC_ANALYZERS)
-    enable_static_analyzers(${PROJECT_NAME})
-endif()
-
+enable_sanitizers(${PROJECT_NAME})
+enable_static_analyzers(${PROJECT_NAME})
+ 
+set_target_properties(${PROJECT_NAME} PROPERTIES
+    VS_DEBUGGER_WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
+    WIN32_EXECUTABLE "$<$<CONFIG:Release>:TRUE>"
+)
+ 
 find_program(CLANG_FORMAT_EXE NAMES clang-format)
 if(CLANG_FORMAT_EXE)
-    file(GLOB_RECURSE ALL_SOURCE_FILES
-        ${CMAKE_CURRENT_SOURCE_DIR}/src/*.cpp
-        ${CMAKE_CURRENT_SOURCE_DIR}/src/*.hpp
-        ${CMAKE_CURRENT_SOURCE_DIR}/include/*.hpp
+    file(GLOB_RECURSE _format_sources
+        "${CMAKE_CURRENT_SOURCE_DIR}/src/*.cpp"
+        "${CMAKE_CURRENT_SOURCE_DIR}/src/*.hpp"
+        "${CMAKE_CURRENT_SOURCE_DIR}/include/*.hpp"
     )
-    
     add_custom_target(format
-        COMMAND ${CLANG_FORMAT_EXE} -i ${ALL_SOURCE_FILES}
-        WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
+        COMMAND ${CLANG_FORMAT_EXE} -i ${_format_sources}
+        WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
+        COMMENT "clang-format: formatting sources"
     )
-    
     add_custom_target(format-check
-        COMMAND ${CLANG_FORMAT_EXE} --dry-run --Werror ${ALL_SOURCE_FILES}
-        WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
+        COMMAND ${CLANG_FORMAT_EXE} --dry-run --Werror ${_format_sources}
+        WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
+        COMMENT "clang-format: checking formatting"
     )
+    set_target_properties(format format-check PROPERTIES FOLDER "Tooling")
+    message(STATUS "clang-format: ${CLANG_FORMAT_EXE}")
+else()
+    message(STATUS "clang-format: not found")
 endif()
 
 include(GNUInstallDirs)
-install(TARGETS ${PROJECT_NAME} RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
+install(TARGETS ${PROJECT_NAME}
+    RUNTIME DESTINATION "${CMAKE_INSTALL_BINDIR}"
+)
+install(DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/assets"
+    DESTINATION "${CMAKE_INSTALL_DATADIR}/${PROJECT_NAME}"
+)

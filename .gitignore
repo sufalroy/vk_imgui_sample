@@ -1,43 +1,15 @@
+# =========================
 # Build directories
+# =========================
 build/
 out/
 cmake-build-*/
+bin/
+lib/
 
-# Editor and IDE files
-.idea/
-.vscode/*
-!.vscode/settings.json
-!.vscode/tasks.json
-!.vscode/launch.json
-!.vscode/extensions.json
-.vs
-*.swp
-*~
-.DS_Store
-
-# Compiled Object files
-*.o
-*.obj
-
-# Precompiled Headers
-*.gch
-*.pch
-
-# Compiled Dynamic libraries
-*.so
-*.dylib
-*.dll
-
-# Compiled Static libraries
-*.a
-*.lib
-
-# Executables
-*.exe
-*.out
-*.app
-
-# CMake generated files
+# =========================
+# CMake
+# =========================
 CMakeCache.txt
 CMakeFiles/
 CMakeScripts/
@@ -48,26 +20,100 @@ install_manifest.txt
 compile_commands.json
 CTestTestfile.cmake
 
-# Dependency cache directories
-.cpm-cache
+# CMake Presets
+CMakePresets.json
 
-# Debugging files
+# =========================
+# CPM (CMake Package Manager)
+# =========================
+.cpm-cache/
+
+# =========================
+# Compiled files
+# =========================
+*.o
+*.obj
+*.lo
+*.slo
+
+# =========================
+# Libraries
+# =========================
+*.a
+*.lib
+*.so
+*.dylib
+*.dll
+
+# =========================
+# Executables
+# =========================
+*.exe
+*.out
+*.app
+
+# =========================
+# Debug / Symbols
+# =========================
+*.pdb
+*.idb
+*.ilk
 *.dSYM/
 *.su
-*.idb
-*.pdb
 
-# Code coverage
+# =========================
+# Precompiled headers
+# =========================
+*.pch
+*.gch
+
+# =========================
+# Coverage / Profiling
+# =========================
 *.gcda
 *.gcno
 *.gcov
 coverage/
-
-# Profiling
 gmon.out
 callgrind.out*
 
-# Version control
+# =========================
+# Vulkan / Shader artifacts
+# =========================
+*.spv
+
+# =========================
+# IDE / Editor
+# =========================
+
+# Visual Studio
+.vs/
+*.VC.db
+*.VC.opendb
+
+# VSCode (keep useful configs)
+.vscode/*
+!.vscode/settings.json
+!.vscode/tasks.json
+!.vscode/launch.json
+!.vscode/extensions.json
+
+# JetBrains (CLion, etc.)
+.idea/
+
+# Vim / temp
+*.swp
+*~
+.DS_Store
+
+# =========================
+# Version control (safety)
+# =========================
 .git/
 .hg/
 .svn/
+
+# =========================
+# OS files
+# =========================
+Thumbs.db

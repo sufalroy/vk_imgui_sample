@@ -14,8 +14,7 @@
       "binaryDir": "${sourceDir}/build/${presetName}",
       "cacheVariables": {
         "CMAKE_EXPORT_COMPILE_COMMANDS": "ON",
-        "CMAKE_MSVC_RUNTIME_LIBRARY": "MultiThreaded$<$<CONFIG:Debug>:Debug>DLL",
-        "ENABLE_PCH": "ON"
+        "CMAKE_MSVC_RUNTIME_LIBRARY": "MultiThreaded$<$<CONFIG:Debug>:Debug>DLL"
       },
       "condition": {
         "type": "equals",
@@ -29,9 +28,10 @@
       "inherits": "win-base",
       "cacheVariables": {
         "CMAKE_BUILD_TYPE": "Debug",
-        "ENABLE_STATIC_ANALYZERS": "ON",
+        "ENABLE_WARNINGS_AS_ERRORS": "OFF",
         "ENABLE_HARDENING": "ON",
-        "ENABLE_SANITIZERS": "ON"
+        "ENABLE_SANITIZERS": "ON",
+        "ENABLE_STATIC_ANALYZERS": "ON"
       }
     },
     {
@@ -42,6 +42,7 @@
         "CMAKE_BUILD_TYPE": "Release",
         "ENABLE_IPO": "ON",
         "ENABLE_HARDENING": "ON",
+        "ENABLE_WARNINGS_AS_ERRORS": "ON",
         "ENABLE_STATIC_ANALYZERS": "OFF"
       }
     },
