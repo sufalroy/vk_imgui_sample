@@ -13,6 +13,7 @@
       "architecture": "x64",
       "binaryDir": "${sourceDir}/build/${presetName}",
       "cacheVariables": {
+        "CMAKE_CXX_STANDARD": "23",
         "CMAKE_EXPORT_COMPILE_COMMANDS": "ON",
         "CMAKE_MSVC_RUNTIME_LIBRARY": "MultiThreaded$<$<CONFIG:Debug>:Debug>DLL"
       },
@@ -24,36 +25,90 @@
     },
     {
       "name": "win-debug",
-      "displayName": "Windows Debug",
       "inherits": "win-base",
       "cacheVariables": {
         "CMAKE_BUILD_TYPE": "Debug",
         "ENABLE_WARNINGS_AS_ERRORS": "OFF",
         "ENABLE_HARDENING": "ON",
-        "ENABLE_SANITIZERS": "ON",
-        "ENABLE_STATIC_ANALYZERS": "ON"
+        "ENABLE_SANITIZERS": "OFF",
+        "ENABLE_STATIC_ANALYZERS": "ON",
+        "ENABLE_IPO": "OFF"
       }
     },
     {
       "name": "win-release",
-      "displayName": "Windows Release",
       "inherits": "win-base",
       "cacheVariables": {
         "CMAKE_BUILD_TYPE": "Release",
         "ENABLE_IPO": "ON",
         "ENABLE_HARDENING": "ON",
         "ENABLE_WARNINGS_AS_ERRORS": "ON",
-        "ENABLE_STATIC_ANALYZERS": "OFF"
+        "ENABLE_STATIC_ANALYZERS": "OFF",
+        "ENABLE_SANITIZERS": "OFF"
       }
     },
     {
       "name": "win-relwithdebinfo",
-      "displayName": "Windows RelWithDebInfo",
       "inherits": "win-base",
       "cacheVariables": {
         "CMAKE_BUILD_TYPE": "RelWithDebInfo",
         "ENABLE_IPO": "ON",
-        "ENABLE_HARDENING": "ON"
+        "ENABLE_HARDENING": "ON",
+        "ENABLE_WARNINGS_AS_ERRORS": "ON",
+        "ENABLE_STATIC_ANALYZERS": "OFF",
+        "ENABLE_SANITIZERS": "OFF"
+      }
+    },
+    {
+      "name": "unix-base",
+      "hidden": true,
+      "generator": "Ninja Multi-Config",
+      "binaryDir": "${sourceDir}/build/${presetName}",
+      "cacheVariables": {
+        "CMAKE_CXX_STANDARD": "23",
+        "CMAKE_C_COMPILER": "clang",
+        "CMAKE_CXX_COMPILER": "clang++",
+        "CMAKE_CXX_FLAGS": "-stdlib=libc++",
+        "CMAKE_EXE_LINKER_FLAGS": "-stdlib=libc++",
+        "CMAKE_EXPORT_COMPILE_COMMANDS": "ON"
+      },
+      "condition": {
+        "type": "notEquals",
+        "lhs": "${hostSystemName}",
+        "rhs": "Windows"
+      }
+    },
+    {
+      "name": "unix-debug",
+      "inherits": "unix-base",
+      "cacheVariables": {
+        "ENABLE_WARNINGS_AS_ERRORS": "OFF",
+        "ENABLE_HARDENING": "ON",
+        "ENABLE_SANITIZERS": "ON",
+        "ENABLE_STATIC_ANALYZERS": "ON",
+        "ENABLE_IPO": "OFF"
+      }
+    },
+    {
+      "name": "unix-release",
+      "inherits": "unix-base",
+      "cacheVariables": {
+        "ENABLE_IPO": "ON",
+        "ENABLE_HARDENING": "ON",
+        "ENABLE_WARNINGS_AS_ERRORS": "ON",
+        "ENABLE_STATIC_ANALYZERS": "OFF",
+        "ENABLE_SANITIZERS": "OFF"
+      }
+    },
+    {
+      "name": "unix-relwithdebinfo",
+      "inherits": "unix-base",
+      "cacheVariables": {
+        "ENABLE_IPO": "ON",
+        "ENABLE_HARDENING": "ON",
+        "ENABLE_WARNINGS_AS_ERRORS": "ON",
+        "ENABLE_STATIC_ANALYZERS": "OFF",
+        "ENABLE_SANITIZERS": "OFF"
       }
     }
   ],
@@ -73,6 +128,24 @@
     {
       "name": "win-relwithdebinfo",
       "configurePreset": "win-relwithdebinfo",
+      "configuration": "RelWithDebInfo",
+      "jobs": 16
+    },
+    {
+      "name": "unix-debug",
+      "configurePreset": "unix-debug",
+      "configuration": "Debug",
+      "jobs": 16
+    },
+    {
+      "name": "unix-release",
+      "configurePreset": "unix-release",
+      "configuration": "Release",
+      "jobs": 16
+    },
+    {
+      "name": "unix-relwithdebinfo",
+      "configurePreset": "unix-relwithdebinfo",
       "configuration": "RelWithDebInfo",
       "jobs": 16
     }

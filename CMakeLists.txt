@@ -115,29 +115,6 @@ target_compile_definitions(${PROJECT_NAME} PRIVATE
     $<$<BOOL:${ENABLE_CPP20_MODULE}>:USE_CPP20_MODULES=1>
 )
  
-if(ENABLE_PCH)
-    target_precompile_headers(${PROJECT_NAME} PRIVATE
-        <algorithm>
-        <array>
-        <cstddef>
-        <cstdint>
-        <expected>
-        <filesystem>
-        <format>
-        <fstream>
-        <functional>
-        <limits>
-        <optional>
-        <print>
-        <ranges>
-        <span>
-        <string>
-        <string_view>
-        <unordered_set>
-        <vector>
-    )
-endif()
- 
 if(ENABLE_IPO)
     set_target_properties(${PROJECT_NAME} PROPERTIES
         INTERPROCEDURAL_OPTIMIZATION            TRUE   # Release / RelWithDebInfo

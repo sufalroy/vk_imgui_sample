@@ -20,6 +20,7 @@ import vulkan_hpp;
 #include <filesystem>
 #include <format>
 #include <fstream>
+#include <iostream>
 #include <print>
 #include <unordered_set>
 
@@ -302,6 +303,9 @@ private:
                 continue;
             }
 
+            const auto device_properties = device.getProperties();
+            std::println("Device Name: {}", std::string_view(device_properties.deviceName));
+
             auto indices_result = find_queue_families(device);
             if (!indices_result.has_value() || !indices_result->is_complete()) {
                 continue;
@@ -467,7 +471,7 @@ private:
     }
 
     auto create_graphics_pipeline() noexcept -> Result<> {
-        auto spirv = read_file("C:/Laboratory/cpp-workspace/vk_imgui_sample/assets/shaders/triangle.spv");
+        auto spirv = read_file("/home/dev/Laboratory/cpp_workspace/vk_imgui_sample/assets/shaders/triangle.spv");
         if (!spirv) {
             return std::unexpected(spirv.error());
         }
@@ -615,7 +619,7 @@ private:
         return {};
     }
 
-    auto transition_image_layout(vk::raii::CommandBuffer& cmd,
+    auto transition_image_layout(const vk::raii::CommandBuffer& cmd,
                                  uint32_t image_index,
                                  vk::ImageLayout old_layout,
                                  vk::ImageLayout new_layout,
@@ -649,7 +653,7 @@ private:
         });
     }
 
-    auto record_command_buffer(vk::raii::CommandBuffer& cmd, uint32_t image_index) noexcept -> Result<> {
+    auto record_command_buffer(const vk::raii::CommandBuffer& cmd, uint32_t image_index) noexcept -> Result<> {
         cmd.begin(vk::CommandBufferBeginInfo{});
 
         transition_image_layout(cmd,
@@ -661,7 +665,7 @@ private:
                                 vk::PipelineStageFlagBits2::eColorAttachmentOutput,
                                 vk::PipelineStageFlagBits2::eColorAttachmentOutput);
 
-        const vk::ClearValue clear_color{vk::ClearColorValue{0.0F, 0.0F, 0.0F, 1.0F}};
+        constexpr vk::ClearValue clear_color{vk::ClearColorValue{0.0F, 0.0F, 0.0F, 1.0F}};
 
         const vk::RenderingAttachmentInfo color_attachment{
             .imageView = *swapchain_image_views_[image_index],
@@ -786,7 +790,7 @@ private:
 
         device_.resetFences(*fence);
 
-        const vk::PipelineStageFlags wait_stage = vk::PipelineStageFlagBits::eColorAttachmentOutput;
+        constexpr vk::PipelineStageFlags wait_stage = vk::PipelineStageFlagBits::eColorAttachmentOutput;
 
         const vk::SubmitInfo submit_info{
             .waitSemaphoreCount = 1,
@@ -821,8 +825,8 @@ private:
         return {};
     }
 
-    [[nodiscard]] auto create_shader_module(const std::vector<std::byte>& code) noexcept
-        -> Result<vk::raii::ShaderModule> {
+    [[nodiscard]] auto
+    create_shader_module(const std::vector<std::byte>& code) noexcept -> Result<vk::raii::ShaderModule> {
         vk::ShaderModuleCreateInfo create_info{
             .codeSize = code.size(),
             .pCode = reinterpret_cast<const uint32_t*>(code.data()),
@@ -907,8 +911,8 @@ private:
                dynamic_features.extendedDynamicState;
     }
 
-    [[nodiscard]] auto query_swapchain_support(const vk::raii::PhysicalDevice& device) const noexcept
-        -> SwapChainSupportDetails {
+    [[nodiscard]] auto
+    query_swapchain_support(const vk::raii::PhysicalDevice& device) const noexcept -> SwapChainSupportDetails {
         return SwapChainSupportDetails{
             .capabilities = device.getSurfaceCapabilitiesKHR(*surface_),
             .formats = device.getSurfaceFormatsKHR(*surface_),
@@ -916,22 +920,22 @@ private:
         };
     }
 
-    [[nodiscard]] static auto choose_swap_surface_format(std::span<const vk::SurfaceFormatKHR> formats) noexcept
-        -> vk::SurfaceFormatKHR {
+    [[nodiscard]] static auto
+    choose_swap_surface_format(std::span<const vk::SurfaceFormatKHR> formats) noexcept -> vk::SurfaceFormatKHR {
         const auto it = std::ranges::find_if(formats, [](const auto& f) {
             return f.format == vk::Format::eB8G8R8A8Srgb && f.colorSpace == vk::ColorSpaceKHR::eSrgbNonlinear;
         });
         return it != formats.end() ? *it : formats.front();
     }
 
-    [[nodiscard]] static auto choose_swap_present_mode(std::span<const vk::PresentModeKHR> present_modes) noexcept
-        -> vk::PresentModeKHR {
+    [[nodiscard]] static auto
+    choose_swap_present_mode(std::span<const vk::PresentModeKHR> present_modes) noexcept -> vk::PresentModeKHR {
         const auto it = std::ranges::find(present_modes, vk::PresentModeKHR::eMailbox);
         return it != present_modes.end() ? *it : vk::PresentModeKHR::eFifo;
     }
 
-    [[nodiscard]] auto choose_swap_extent(const vk::SurfaceCapabilitiesKHR& capabilities) const noexcept
-        -> vk::Extent2D {
+    [[nodiscard]] auto
+    choose_swap_extent(const vk::SurfaceCapabilitiesKHR& capabilities) const noexcept -> vk::Extent2D {
         if (capabilities.currentExtent.width != std::numeric_limits<uint32_t>::max()) {
             return capabilities.currentExtent;
         }
@@ -946,8 +950,8 @@ private:
         };
     }
 
-    [[nodiscard]] auto find_queue_families(const vk::raii::PhysicalDevice& device) const noexcept
-        -> Result<QueueFamilyIndices> {
+    [[nodiscard]] auto
+    find_queue_families(const vk::raii::PhysicalDevice& device) const noexcept -> Result<QueueFamilyIndices> {
         QueueFamilyIndices indices{};
         const auto queue_families = device.getQueueFamilyProperties();
 

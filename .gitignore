@@ -117,3 +117,9 @@ callgrind.out*
 # OS files
 # =========================
 Thumbs.db
+
+# Leak sanitizer suppression
+lsan.supp
+
+# Run debug script
+run_debug.sh

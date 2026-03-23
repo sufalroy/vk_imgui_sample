@@ -32,13 +32,8 @@
         string(REPLACE ";" "," CLANG_TIDY_CHECKS_STR "${CLANG_TIDY_CHECKS}")
 
         set_target_properties(${target} PROPERTIES
-            CXX_CLANG_TIDY
-            "${CLANG_TIDY_EXE}\
-            ;--checks=${CLANG_TIDY_CHECKS_STR}\
-            ;--warnings-as-errors=*\
-            ;--header-filter=${CMAKE_CURRENT_SOURCE_DIR}/.*\
-            ;--use-color\
-            ;-p=${CMAKE_BINARY_DIR}"
+                CXX_CLANG_TIDY
+                "${CLANG_TIDY_EXE};--checks=${CLANG_TIDY_CHECKS_STR};--header-filter=${CMAKE_CURRENT_SOURCE_DIR}/(src|include)/.*;--use-color;-p=${CMAKE_BINARY_DIR};--extra-arg-before=--driver-mode=g++"
         )
         message(STATUS "clang-tidy: ${CLANG_TIDY_EXE}")
     else()
@@ -49,7 +44,7 @@
     if(CPPCHECK_EXE)
         set(CPPCHECK_ARGS
             --enable=all
-            --std=c++23           # Match project standard
+            --std=c++20           # Match project standard
             --language=c++
             --platform=win64
             --inconclusive

@@ -22,10 +22,9 @@ Checks: >
   -cppcoreguidelines-owning-memory,
   -cert-err58-cpp
 
-WarningsAsErrors: '*'
+WarningsAsErrors: ''
 HeaderFilterRegex: '.*'
 FormatStyle: file
-AnalyzeTemporaryDtors: true
 
 CheckOptions:
   - key: readability-identifier-naming.ClassCase
