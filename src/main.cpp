@@ -1,8 +1,4 @@
-#if defined(__INTELLISENSE__) || !defined(USE_CPP20_MODULES)
-#    include <vulkan/vulkan_raii.hpp>
-#else
-import vulkan_hpp;
-#endif
+#include <vulkan/vulkan_raii.hpp>
 
 #define GLFW_INCLUDE_VULKAN
 #include <GLFW/glfw3.h>
@@ -145,7 +141,7 @@ private:
         }
 
         glfwWindowHint(GLFW_CLIENT_API, GLFW_NO_API);
-        glfwWindowHint(GLFW_RESIZABLE, GLFW_FALSE);
+        glfwWindowHint(GLFW_RESIZABLE, GLFW_TRUE);
 
         window_ = glfwCreateWindow(WIDTH, HEIGHT, "Vulkan Application", nullptr, nullptr);
         if (!window_) {
@@ -154,6 +150,8 @@ private:
                 Error{.code = ErrorCode::WindowCreationFailed, .message = "Failed to create GLFW window"});
         }
 
+        glfwSetWindowUserPointer(window_, this);
+        glfwSetFramebufferSizeCallback(window_, glfw_framebuffer_resize_callback);
         glfwSetKeyCallback(window_, glfw_key_callback);
 
         return {};
@@ -433,6 +431,51 @@ private:
         return {};
     }
 
+    auto cleanup_swapchain() noexcept -> void {
+        swapchain_image_views_.clear();
+        swapchain_images_.clear();
+        swapchain_ = nullptr;
+
+        render_finished_semaphores_.clear();
+    }
+
+    auto recreate_swapchain() noexcept -> Result<> {
+        int width{}, height{};
+        glfwGetFramebufferSize(window_, &width, &height);
+        while (width == 0 || height == 0) {
+            glfwGetFramebufferSize(window_, &width, &height);
+            glfwWaitEvents();
+        }
+
+        device_.waitIdle();
+
+        cleanup_swapchain();
+
+        if (auto result = create_swap_chain(); !result) {
+            return std::unexpected(result.error());
+        }
+
+        if (auto result = create_image_views(); !result) {
+            return std::unexpected(result.error());
+        }
+
+        render_finished_semaphores_.reserve(swapchain_images_.size());
+        for (uint32_t i = 0; i < static_cast<uint32_t>(swapchain_images_.size()); ++i) {
+            auto result = device_.createSemaphore(vk::SemaphoreCreateInfo{});
+            if (!result.has_value()) {
+                return std::unexpected(Error{
+                    .code = ErrorCode::SynchronizationObjectCreationFailed,
+                    .message = std::format(
+                        "Failed to create render finished semaphore {}: {}", i, vk::to_string(result.error())),
+                    .vk_result = result.error(),
+                });
+            }
+            render_finished_semaphores_.emplace_back(std::move(*result));
+        }
+
+        return {};
+    }
+
     auto create_image_views() noexcept -> Result<> {
         swapchain_image_views_.reserve(swapchain_images_.size());
 
@@ -471,7 +514,7 @@ private:
     }
 
     auto create_graphics_pipeline() noexcept -> Result<> {
-        auto spirv = read_file("/home/dev/Laboratory/cpp_workspace/vk_imgui_sample/assets/shaders/triangle.spv");
+        auto spirv = read_file("C:/Laboratory/cpp-workspace/vk_imgui_sample/assets/shaders/triangle.spv");
         if (!spirv) {
             return std::unexpected(spirv.error());
         }
@@ -774,6 +817,14 @@ private:
 
         const auto [acquire_r, image_index] = swapchain_.acquireNextImage(
             std::numeric_limits<uint64_t>::max(), *image_available_semaphores_[current_frame_], nullptr);
+
+        if (acquire_r == vk::Result::eErrorOutOfDateKHR) {
+            if (auto r = recreate_swapchain(); !r) {
+                return std::unexpected(r.error());
+            }
+            return {};
+        }
+
         if (acquire_r != vk::Result::eSuccess && acquire_r != vk::Result::eSuboptimalKHR) {
             return std::unexpected(Error{
                 .code = ErrorCode::AcquireImageFailed,
@@ -783,37 +834,42 @@ private:
         }
 
         cmd.reset();
-
         if (auto r = record_command_buffer(cmd, image_index); !r) {
             return std::unexpected(r.error());
         }
 
         device_.resetFences(*fence);
 
-        constexpr vk::PipelineStageFlags wait_stage = vk::PipelineStageFlagBits::eColorAttachmentOutput;
+        const vk::PipelineStageFlags wait_stage = vk::PipelineStageFlagBits::eColorAttachmentOutput;
 
-        const vk::SubmitInfo submit_info{
-            .waitSemaphoreCount = 1,
-            .pWaitSemaphores = &*image_available_semaphores_[current_frame_],
-            .pWaitDstStageMask = &wait_stage,
-            .commandBufferCount = 1,
-            .pCommandBuffers = &*cmd,
-            .signalSemaphoreCount = 1,
-            .pSignalSemaphores = &*render_finished_semaphores_[image_index],
-        };
+        graphics_queue_.submit(
+            vk::SubmitInfo{
+                .waitSemaphoreCount = 1,
+                .pWaitSemaphores = &*image_available_semaphores_[current_frame_],
+                .pWaitDstStageMask = &wait_stage,
+                .commandBufferCount = 1,
+                .pCommandBuffers = &*cmd,
+                .signalSemaphoreCount = 1,
+                .pSignalSemaphores = &*render_finished_semaphores_[image_index],
+            },
+            *fence);
 
-        graphics_queue_.submit(submit_info, *fence);
-
-        const vk::PresentInfoKHR present_info{
+        const auto present_r = present_queue_.presentKHR(vk::PresentInfoKHR{
             .waitSemaphoreCount = 1,
             .pWaitSemaphores = &*render_finished_semaphores_[image_index],
             .swapchainCount = 1,
             .pSwapchains = &*swapchain_,
             .pImageIndices = &image_index,
-        };
+        });
 
-        const auto present_r = present_queue_.presentKHR(present_info);
-        if (present_r != vk::Result::eSuccess && present_r != vk::Result::eSuboptimalKHR) {
+        const bool needs_recreation = present_r == vk::Result::eErrorOutOfDateKHR ||
+                                      present_r == vk::Result::eSuboptimalKHR || framebuffer_resized_;
+        if (needs_recreation) {
+            framebuffer_resized_ = false;
+            if (auto r = recreate_swapchain(); !r) {
+                return std::unexpected(r.error());
+            }
+        } else if (present_r != vk::Result::eSuccess) {
             return std::unexpected(Error{
                 .code = ErrorCode::PresentFailed,
                 .message = std::format("presentKHR failed: {}", vk::to_string(present_r)),
@@ -825,8 +881,8 @@ private:
         return {};
     }
 
-    [[nodiscard]] auto
-    create_shader_module(const std::vector<std::byte>& code) noexcept -> Result<vk::raii::ShaderModule> {
+    [[nodiscard]] auto create_shader_module(const std::vector<std::byte>& code) noexcept
+        -> Result<vk::raii::ShaderModule> {
         vk::ShaderModuleCreateInfo create_info{
             .codeSize = code.size(),
             .pCode = reinterpret_cast<const uint32_t*>(code.data()),
@@ -911,8 +967,8 @@ private:
                dynamic_features.extendedDynamicState;
     }
 
-    [[nodiscard]] auto
-    query_swapchain_support(const vk::raii::PhysicalDevice& device) const noexcept -> SwapChainSupportDetails {
+    [[nodiscard]] auto query_swapchain_support(const vk::raii::PhysicalDevice& device) const noexcept
+        -> SwapChainSupportDetails {
         return SwapChainSupportDetails{
             .capabilities = device.getSurfaceCapabilitiesKHR(*surface_),
             .formats = device.getSurfaceFormatsKHR(*surface_),
@@ -920,22 +976,22 @@ private:
         };
     }
 
-    [[nodiscard]] static auto
-    choose_swap_surface_format(std::span<const vk::SurfaceFormatKHR> formats) noexcept -> vk::SurfaceFormatKHR {
+    [[nodiscard]] static auto choose_swap_surface_format(std::span<const vk::SurfaceFormatKHR> formats) noexcept
+        -> vk::SurfaceFormatKHR {
         const auto it = std::ranges::find_if(formats, [](const auto& f) {
             return f.format == vk::Format::eB8G8R8A8Srgb && f.colorSpace == vk::ColorSpaceKHR::eSrgbNonlinear;
         });
         return it != formats.end() ? *it : formats.front();
     }
 
-    [[nodiscard]] static auto
-    choose_swap_present_mode(std::span<const vk::PresentModeKHR> present_modes) noexcept -> vk::PresentModeKHR {
+    [[nodiscard]] static auto choose_swap_present_mode(std::span<const vk::PresentModeKHR> present_modes) noexcept
+        -> vk::PresentModeKHR {
         const auto it = std::ranges::find(present_modes, vk::PresentModeKHR::eMailbox);
         return it != present_modes.end() ? *it : vk::PresentModeKHR::eFifo;
     }
 
-    [[nodiscard]] auto
-    choose_swap_extent(const vk::SurfaceCapabilitiesKHR& capabilities) const noexcept -> vk::Extent2D {
+    [[nodiscard]] auto choose_swap_extent(const vk::SurfaceCapabilitiesKHR& capabilities) const noexcept
+        -> vk::Extent2D {
         if (capabilities.currentExtent.width != std::numeric_limits<uint32_t>::max()) {
             return capabilities.currentExtent;
         }
@@ -950,8 +1006,8 @@ private:
         };
     }
 
-    [[nodiscard]] auto
-    find_queue_families(const vk::raii::PhysicalDevice& device) const noexcept -> Result<QueueFamilyIndices> {
+    [[nodiscard]] auto find_queue_families(const vk::raii::PhysicalDevice& device) const noexcept
+        -> Result<QueueFamilyIndices> {
         QueueFamilyIndices indices{};
         const auto queue_families = device.getQueueFamilyProperties();
 
@@ -1049,6 +1105,11 @@ private:
         return vk::False;
     }
 
+    static void glfw_framebuffer_resize_callback(GLFWwindow* window, int /* width */, int /* height */) {
+        auto app = reinterpret_cast<VkApplication*>(glfwGetWindowUserPointer(window));
+        app->framebuffer_resized_ = true;
+    }
+
     static void glfw_key_callback(GLFWwindow* window, int key, int /* scancode */, int action, int /* mods */) {
         if (key == GLFW_KEY_ESCAPE && action == GLFW_PRESS) {
             glfwSetWindowShouldClose(window, GLFW_TRUE);
@@ -1102,6 +1163,7 @@ private:
     std::vector<vk::raii::Fence> in_flight_fences_;
 
     uint32_t current_frame_{0};
+    bool framebuffer_resized_{false};
 };
 
 auto main() -> int {

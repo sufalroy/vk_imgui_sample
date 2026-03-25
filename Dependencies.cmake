@@ -1,47 +1,4 @@
-include(cmake/CPM.cmake)
-
-if(ENABLE_CPP20_MODULE)
-    set(CMAKE_CXX_SCAN_FOR_MODULES ON)
-
-    add_library(VulkanCppModule)
-    add_library(Vulkan::cppm ALIAS VulkanCppModule)
-
-    target_compile_definitions(VulkanCppModule PUBLIC
-        VULKAN_HPP_DISPATCH_LOADER_DYNAMIC=1
-        VULKAN_HPP_NO_STRUCT_CONSTRUCTORS
-    )
-    target_include_directories(VulkanCppModule PUBLIC "${Vulkan_INCLUDE_DIR}")
-    target_link_libraries(VulkanCppModule PUBLIC Vulkan::Vulkan)
-    set_target_properties(VulkanCppModule PROPERTIES
-        CXX_STANDARD 23
-        FOLDER "External"
-    )
-
-    if(MSVC)
-        target_compile_options(VulkanCppModule PRIVATE
-            /std:c++latest
-            /permissive-
-            /Zc:__cplusplus
-            /Zc:preprocessor
-            /EHsc
-            /translateInclude
-        )
-    endif()
-
-    target_sources(VulkanCppModule
-        PUBLIC FILE_SET cxx_modules TYPE CXX_MODULES
-        BASE_DIRS "${Vulkan_INCLUDE_DIR}"
-        FILES     "${Vulkan_INCLUDE_DIR}/vulkan/vulkan.cppm"
-    )
-else()
-    add_library(VulkanCppModule INTERFACE)
-    add_library(Vulkan::cppm ALIAS VulkanCppModule)
-    target_link_libraries(VulkanCppModule INTERFACE Vulkan::Vulkan)
-    target_compile_definitions(VulkanCppModule INTERFACE
-        VULKAN_HPP_DISPATCH_LOADER_DYNAMIC=1
-        VULKAN_HPP_NO_STRUCT_CONSTRUCTORS
-    )
-endif()
+﻿include(cmake/CPM.cmake)
 
 set(GLFW_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
 set(GLFW_BUILD_TESTS    OFF CACHE BOOL "" FORCE)
@@ -56,10 +13,11 @@ CPMAddPackage(
 )
 if(TARGET glfw)
     set_target_properties(glfw PROPERTIES FOLDER "External")
-    target_compile_options(glfw PRIVATE
-        $<$<CXX_COMPILER_ID:MSVC>:/W0>
-        $<$<NOT:$<CXX_COMPILER_ID:MSVC>>:-w>
-    )
+    if(MSVC)
+        target_compile_options(glfw PRIVATE /W0)
+    else()
+        target_compile_options(glfw PRIVATE -w)
+    endif()
 endif()
 
 set(GLM_BUILD_TESTS   OFF CACHE BOOL "" FORCE)
@@ -98,10 +56,11 @@ if(imgui_ADDED)
         IMGUI_DISABLE_OBSOLETE_FUNCTIONS
         IMGUI_DISABLE_OBSOLETE_KEYIO
     )
-    target_compile_options(imgui PRIVATE
-        $<$<CXX_COMPILER_ID:MSVC>:/W0>
-        $<$<NOT:$<CXX_COMPILER_ID:MSVC>>:-w>
-    )
+    if(MSVC)
+        target_compile_options(imgui PRIVATE /W0)
+    else()
+        target_compile_options(imgui PRIVATE -w)
+    endif()
     set_target_properties(imgui PROPERTIES
         FOLDER                    "External"
         CXX_STANDARD              17
