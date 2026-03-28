@@ -16,11 +16,11 @@
 #include <filesystem>
 #include <format>
 #include <fstream>
+#include <glm/glm.hpp>
 #include <iostream>
 #include <print>
 #include <unordered_set>
 
-namespace {
 constexpr uint32_t WIDTH = 800;
 constexpr uint32_t HEIGHT = 600;
 constexpr uint32_t MAX_FRAMES_IN_FLIGHT = 2;
@@ -33,7 +33,6 @@ constexpr bool ENABLE_VALIDATION = false;
 #else
 constexpr bool ENABLE_VALIDATION = true;
 #endif
-} // namespace
 
 enum class ErrorCode {
     GlfwInitFailed,
@@ -61,7 +60,10 @@ enum class ErrorCode {
     SynchronizationObjectCreationFailed,
     QueueSubmitFailed,
     AcquireImageFailed,
-    PresentFailed
+    PresentFailed,
+    BufferCreationFailed,
+    MemoryTypeNotFound,
+    MemoryAllocationFailed,
 };
 
 struct Error {
@@ -103,6 +105,51 @@ struct SwapChainSupportDetails {
     [[nodiscard]] constexpr auto is_adequate() const noexcept -> bool {
         return !formats.empty() && !present_modes.empty();
     }
+};
+
+struct Vertex {
+    glm::vec2 pos;
+    glm::vec3 color;
+
+    [[nodiscard]] static constexpr auto get_binding_description() noexcept -> vk::VertexInputBindingDescription {
+        return vk::VertexInputBindingDescription{
+            .binding = 0,
+            .stride = sizeof(Vertex),
+            .inputRate = vk::VertexInputRate::eVertex,
+        };
+    }
+
+    [[nodiscard]] static constexpr auto get_attribute_descriptions() noexcept
+        -> std::array<vk::VertexInputAttributeDescription, 2> {
+        return {
+            vk::VertexInputAttributeDescription{
+                .location = 0,
+                .binding = 0,
+                .format = vk::Format::eR32G32Sfloat,
+                .offset = offsetof(Vertex, pos),
+            },
+            vk::VertexInputAttributeDescription{
+                .location = 1,
+                .binding = 0,
+                .format = vk::Format::eR32G32B32Sfloat,
+                .offset = offsetof(Vertex, color),
+            },
+        };
+    }
+};
+
+const std::vector<Vertex> VERTICES = {
+    {{-0.5f, -0.5f}, {1.0f, 0.0f, 0.0f}},
+    {{0.5f, -0.5f}, {0.0f, 1.0f, 0.0f}},
+    {{0.5f, 0.5f}, {0.0f, 0.0f, 1.0f}},
+    {{-0.5f, 0.5f}, {1.0f, 1.0f, 1.0f}}
+};
+
+const std::vector<uint16_t> INDICES = {0, 1, 2, 2, 3, 0};
+
+struct BufferAllocation {
+    vk::raii::Buffer buffer{nullptr};
+    vk::raii::DeviceMemory memory{nullptr};
 };
 
 class VkApplication {
@@ -201,6 +248,14 @@ private:
         }
 
         if (auto result = create_sync_objects(); !result) {
+            return std::unexpected(result.error());
+        }
+
+        if (auto result = create_vertex_buffer(); !result) {
+            return std::unexpected(result.error());
+        }
+
+        if (auto result = create_index_buffer(); !result) {
             return std::unexpected(result.error());
         }
 
@@ -535,7 +590,15 @@ private:
                                            .pName = "fragMain",
                                        }};
 
-        constexpr vk::PipelineVertexInputStateCreateInfo vertex_input_info{};
+        const auto binding_desc = Vertex::get_binding_description();
+        const auto attribute_desc = Vertex::get_attribute_descriptions();
+
+        const vk::PipelineVertexInputStateCreateInfo vertex_input_info{
+            .vertexBindingDescriptionCount = 1,
+            .pVertexBindingDescriptions = &binding_desc,
+            .vertexAttributeDescriptionCount = static_cast<uint32_t>(attribute_desc.size()),
+            .pVertexAttributeDescriptions = attribute_desc.data(),
+        };
 
         constexpr vk::PipelineInputAssemblyStateCreateInfo input_assembly_info{
             .topology = vk::PrimitiveTopology::eTriangleList, .primitiveRestartEnable = vk::False};
@@ -642,6 +705,154 @@ private:
         return {};
     }
 
+    [[nodiscard]] auto find_memory_type(uint32_t type_filter, vk::MemoryPropertyFlags properties) const noexcept
+        -> std::optional<uint32_t> {
+        auto memory_properties = physical_device_.getMemoryProperties();
+        for (uint32_t i = 0; i < memory_properties.memoryTypeCount; ++i) {
+            if ((type_filter & (1 << i)) &&
+                (memory_properties.memoryTypes[i].propertyFlags & properties) == properties) {
+                return i;
+            }
+        }
+        return std::nullopt;
+    }
+
+    [[nodiscard]] auto create_buffer(vk::DeviceSize size,
+                                     vk::BufferUsageFlags usage,
+                                     vk::MemoryPropertyFlags properties) noexcept -> Result<BufferAllocation> {
+        auto buffer_result = device_.createBuffer(vk::BufferCreateInfo{
+            .size = size,
+            .usage = usage,
+            .sharingMode = vk::SharingMode::eExclusive,
+        });
+        if (!buffer_result.has_value()) {
+            return std::unexpected(Error{
+                .code = ErrorCode::BufferCreationFailed,
+                .message = std::format("Failed to create buffer: {}", vk::to_string(buffer_result.error())),
+                .vk_result = buffer_result.error(),
+            });
+        }
+        const auto mem_req = buffer_result->getMemoryRequirements();
+        const auto mem_type = find_memory_type(mem_req.memoryTypeBits, properties);
+        if (!mem_type.has_value()) {
+            return std::unexpected(Error{
+                .code = ErrorCode::MemoryTypeNotFound,
+                .message = "Failed to find suitable memory type for buffer",
+            });
+        }
+        auto memory_result = device_.allocateMemory(vk::MemoryAllocateInfo{
+            .allocationSize = mem_req.size,
+            .memoryTypeIndex = *mem_type,
+        });
+        if (!memory_result.has_value()) {
+            return std::unexpected(Error{
+                .code = ErrorCode::MemoryAllocationFailed,
+                .message =
+                    std::format("Failed to allocate memory for buffer: {}", vk::to_string(memory_result.error())),
+                .vk_result = memory_result.error(),
+            });
+        }
+
+        buffer_result->bindMemory(*memory_result, 0);
+        return BufferAllocation{std::move(*buffer_result), std::move(*memory_result)};
+    }
+
+    auto copy_buffer(const vk::raii::Buffer& src, const vk::raii::Buffer& dst, vk::DeviceSize size) noexcept
+        -> Result<> {
+        auto cmd_result = device_.allocateCommandBuffers(vk::CommandBufferAllocateInfo{
+            .commandPool = *command_pool_,
+            .level = vk::CommandBufferLevel::ePrimary,
+            .commandBufferCount = 1,
+        });
+        if (!cmd_result.has_value()) {
+            return std::unexpected(Error{
+                .code = ErrorCode::CommandBufferAllocationFailed,
+                .message =
+                    std::format("Failed to allocate transfer command buffer: {}", vk::to_string(cmd_result.error())),
+                .vk_result = cmd_result.error(),
+            });
+        }
+
+        auto& cmd = cmd_result->front();
+        cmd.begin(vk::CommandBufferBeginInfo{
+            .flags = vk::CommandBufferUsageFlagBits::eOneTimeSubmit,
+        });
+        cmd.copyBuffer(src, dst, vk::BufferCopy{.size = size});
+        cmd.end();
+
+        graphics_queue_.submit(vk::SubmitInfo{
+            .commandBufferCount = 1,
+            .pCommandBuffers = &*cmd,
+        });
+        graphics_queue_.waitIdle();
+
+        return {};
+    }
+
+    auto create_vertex_buffer() noexcept -> Result<> {
+        vk::DeviceSize buffer_size = sizeof(VERTICES[0]) * VERTICES.size();
+
+        auto staging =
+            create_buffer(buffer_size,
+                          vk::BufferUsageFlagBits::eTransferSrc,
+                          vk::MemoryPropertyFlagBits::eHostVisible | vk::MemoryPropertyFlagBits::eHostCoherent);
+        if (!staging.has_value()) {
+            return std::unexpected(staging.error());
+        }
+
+        void* data = staging->memory.mapMemory(0, buffer_size);
+        std::memcpy(data, VERTICES.data(), static_cast<size_t>(buffer_size));
+        staging->memory.unmapMemory();
+
+        auto vertex = create_buffer(buffer_size,
+                                    vk::BufferUsageFlagBits::eTransferDst | vk::BufferUsageFlagBits::eVertexBuffer,
+                                    vk::MemoryPropertyFlagBits::eDeviceLocal);
+        if (!vertex.has_value()) {
+            return std::unexpected(vertex.error());
+        }
+
+        if (auto r = copy_buffer(staging->buffer, vertex->buffer, buffer_size); !r) {
+            return std::unexpected(r.error());
+        }
+
+        vertex_buffer_ = std::move(vertex->buffer);
+        vertex_buffer_memory_ = std::move(vertex->memory);
+
+        return {};
+    }
+
+    auto create_index_buffer() noexcept -> Result<> {
+        vk::DeviceSize buffer_size = sizeof(INDICES[0]) * INDICES.size();
+
+        auto staging =
+            create_buffer(buffer_size,
+                          vk::BufferUsageFlagBits::eTransferSrc,
+                          vk::MemoryPropertyFlagBits::eHostVisible | vk::MemoryPropertyFlagBits::eHostCoherent);
+        if (!staging.has_value()) {
+            return std::unexpected(staging.error());
+        }
+
+        void* data = staging->memory.mapMemory(0, buffer_size);
+        std::memcpy(data, INDICES.data(), static_cast<size_t>(buffer_size));
+        staging->memory.unmapMemory();
+
+        auto index = create_buffer(buffer_size,
+                                   vk::BufferUsageFlagBits::eTransferDst | vk::BufferUsageFlagBits::eIndexBuffer,
+                                   vk::MemoryPropertyFlagBits::eDeviceLocal);
+        if (!index.has_value()) {
+            return std::unexpected(index.error());
+        }
+
+        if (auto r = copy_buffer(staging->buffer, index->buffer, buffer_size); !r) {
+            return std::unexpected(r.error());
+        }
+
+        index_buffer_ = std::move(index->buffer);
+        index_buffer_memory_ = std::move(index->memory);
+
+        return {};
+    }
+
     auto create_command_buffers() noexcept -> Result<> {
         const vk::CommandBufferAllocateInfo alloc_info{
             .commandPool = *command_pool_,
@@ -726,6 +937,8 @@ private:
         });
 
         cmd.bindPipeline(vk::PipelineBindPoint::eGraphics, *graphics_pipeline_);
+        cmd.bindVertexBuffers(0, {*vertex_buffer_}, {0ULL});
+        cmd.bindIndexBuffer(*index_buffer_, 0, vk::IndexType::eUint16);
 
         cmd.setViewport(0,
                         vk::Viewport{
@@ -739,7 +952,7 @@ private:
 
         cmd.setScissor(0, vk::Rect2D{.offset = {0, 0}, .extent = swapchain_extent_});
 
-        cmd.draw(3, 1, 0, 0);
+        cmd.drawIndexed(static_cast<uint32_t>(INDICES.size()), 1, 0, 0, 0);
 
         cmd.endRendering();
 
@@ -1164,6 +1377,11 @@ private:
 
     uint32_t current_frame_{0};
     bool framebuffer_resized_{false};
+
+    vk::raii::Buffer vertex_buffer_{nullptr};
+    vk::raii::DeviceMemory vertex_buffer_memory_{nullptr};
+    vk::raii::Buffer index_buffer_{nullptr};
+    vk::raii::DeviceMemory index_buffer_memory_{nullptr};
 };
 
 auto main() -> int {
