@@ -134,8 +134,8 @@ struct Vertex {
         };
     }
 
-    [[nodiscard]] static constexpr auto get_attribute_descriptions() noexcept
-        -> std::array<vk::VertexInputAttributeDescription, 3> {
+    [[nodiscard]] static constexpr auto
+    get_attribute_descriptions() noexcept -> std::array<vk::VertexInputAttributeDescription, 3> {
         return {vk::VertexInputAttributeDescription{
                     .location = 0,
                     .binding = 0,
@@ -157,10 +157,10 @@ struct Vertex {
     }
 };
 
-const std::vector<Vertex> VERTICES = {{{-0.5f, -0.5f}, {1.0f, 0.0f, 0.0f}, {1.0f, 0.0f}},
-                                      {{0.5f, -0.5f}, {0.0f, 1.0f, 0.0f}, {0.0f, 0.0f}},
-                                      {{0.5f, 0.5f}, {0.0f, 0.0f, 1.0f}, {0.0f, 1.0f}},
-                                      {{-0.5f, 0.5f}, {1.0f, 1.0f, 1.0f}, {1.0f, 1.0f}}};
+const std::vector<Vertex> VERTICES = {{.pos = {-0.5F, -0.5F}, .color = {1.0F, 0.0F, 0.0F}, .tex_coord = {1.0F, 0.0F}},
+                                      {.pos = {0.5F, -0.5F}, .color = {0.0F, 1.0F, 0.0F}, .tex_coord = {0.0F, 0.0F}},
+                                      {.pos = {0.5F, 0.5F}, .color = {0.0F, 0.0F, 1.0F}, .tex_coord = {0.0F, 1.0F}},
+                                      {.pos = {-0.5F, 0.5F}, .color = {1.0F, 1.0F, 1.0F}, .tex_coord = {1.0F, 1.0F}}};
 
 const std::vector<uint16_t> INDICES = {0, 1, 2, 2, 3, 0};
 
@@ -587,8 +587,8 @@ private:
         return {};
     }
 
-    [[nodiscard]] auto create_image_view(const vk::Image& image, vk::Format format) noexcept
-        -> Result<vk::raii::ImageView> {
+    [[nodiscard]] auto create_image_view(const vk::Image& image,
+                                         vk::Format format) noexcept -> Result<vk::raii::ImageView> {
         vk::ImageViewCreateInfo create_info{
             .image = image,
             .viewType = vk::ImageViewType::e2D,
@@ -671,7 +671,7 @@ private:
     }
 
     auto create_graphics_pipeline() noexcept -> Result<> {
-        auto spirv = read_file("C:/Laboratory/cpp-workspace/vk_imgui_sample/assets/shaders/triangle.spv");
+        auto spirv = read_file("/home/dev/Laboratory/cpp_workspace/vk_imgui_sample/assets/shaders/triangle.spv");
         if (!spirv) {
             return std::unexpected(spirv.error());
         }
@@ -692,8 +692,8 @@ private:
                                            .pName = "fragMain",
                                        }};
 
-        const auto binding_desc = Vertex::get_binding_description();
-        const auto attribute_desc = Vertex::get_attribute_descriptions();
+        constexpr auto binding_desc = Vertex::get_binding_description();
+        constexpr auto attribute_desc = Vertex::get_attribute_descriptions();
 
         const vk::PipelineVertexInputStateCreateInfo vertex_input_info{
             .vertexBindingDescriptionCount = 1,
@@ -856,7 +856,7 @@ private:
         auto image_result = device_.createImage(vk::ImageCreateInfo{
             .imageType = vk::ImageType::e2D,
             .format = format,
-            .extent = vk::Extent3D{width, height, 1},
+            .extent = vk::Extent3D{.width = width, .height = height, .depth = 1},
             .mipLevels = 1,
             .arrayLayers = 1,
             .samples = vk::SampleCountFlagBits::e1,
@@ -968,8 +968,8 @@ private:
                     .baseArrayLayer = 0,
                     .layerCount = 1,
                 },
-            .imageOffset = vk::Offset3D{0, 0, 0},
-            .imageExtent = vk::Extent3D{width, height, 1},
+            .imageOffset = vk::Offset3D{.x = 0, .y = 0, .z = 0},
+            .imageExtent = vk::Extent3D{.width = width, .height = height, .depth = 1},
         };
         cmd_result->copyBufferToImage(*buffer, *image, vk::ImageLayout::eTransferDstOptimal, region);
         end_single_time_commands(std::move(*cmd_result));
@@ -978,7 +978,7 @@ private:
 
     auto create_texture_image() noexcept -> Result<> {
         int tex_width{}, tex_height{}, tex_channels{};
-        stbi_uc* pixels = stbi_load("C:/Laboratory/cpp-workspace/vk_imgui_sample/assets/textures/texture.jpg",
+        stbi_uc* pixels = stbi_load("/home/dev/Laboratory/cpp_workspace/vk_imgui_sample/assets/textures/texture.png",
                                     &tex_width,
                                     &tex_height,
                                     &tex_channels,
@@ -1002,7 +1002,7 @@ private:
         }
 
         void* data = staging->memory.mapMemory(0, image_size);
-        std::memcpy(data, pixels, static_cast<size_t>(image_size));
+        std::memcpy(data, pixels, image_size);
         staging->memory.unmapMemory();
 
         stbi_image_free(pixels);
@@ -1082,8 +1082,8 @@ private:
         return {};
     }
 
-    [[nodiscard]] auto find_memory_type(uint32_t type_filter, vk::MemoryPropertyFlags properties) const noexcept
-        -> std::optional<uint32_t> {
+    [[nodiscard]] auto find_memory_type(uint32_t type_filter,
+                                        vk::MemoryPropertyFlags properties) const noexcept -> std::optional<uint32_t> {
         auto memory_properties = physical_device_.getMemoryProperties();
         for (uint32_t i = 0; i < memory_properties.memoryTypeCount; ++i) {
             if ((type_filter & (1U << i)) &&
@@ -1131,11 +1131,11 @@ private:
         }
 
         buffer_result->bindMemory(*memory_result, 0);
-        return BufferAllocation{std::move(*buffer_result), std::move(*memory_result)};
+        return BufferAllocation{.buffer = std::move(*buffer_result), .memory = std::move(*memory_result)};
     }
 
-    auto copy_buffer(const vk::raii::Buffer& src, const vk::raii::Buffer& dst, vk::DeviceSize size) noexcept
-        -> Result<> {
+    auto
+    copy_buffer(const vk::raii::Buffer& src, const vk::raii::Buffer& dst, vk::DeviceSize size) noexcept -> Result<> {
         auto cmd_result = begin_single_time_commands();
         if (!cmd_result.has_value()) {
             return std::unexpected(cmd_result.error());
@@ -1422,7 +1422,7 @@ private:
         };
 
         cmd.beginRendering(vk::RenderingInfo{
-            .renderArea = {.offset = {0, 0}, .extent = swapchain_extent_},
+            .renderArea = {.offset = {.x = 0, .y = 0}, .extent = swapchain_extent_},
             .layerCount = 1,
             .colorAttachmentCount = 1,
             .pColorAttachments = &color_attachment,
@@ -1550,7 +1550,7 @@ private:
 
         device_.resetFences(*fence);
 
-        const vk::PipelineStageFlags wait_stage = vk::PipelineStageFlagBits::eColorAttachmentOutput;
+        constexpr vk::PipelineStageFlags wait_stage = vk::PipelineStageFlagBits::eColorAttachmentOutput;
 
         graphics_queue_.submit(
             vk::SubmitInfo{
@@ -1591,8 +1591,8 @@ private:
         return {};
     }
 
-    [[nodiscard]] auto create_shader_module(const std::vector<std::byte>& code) noexcept
-        -> Result<vk::raii::ShaderModule> {
+    [[nodiscard]] auto
+    create_shader_module(const std::vector<std::byte>& code) noexcept -> Result<vk::raii::ShaderModule> {
         vk::ShaderModuleCreateInfo create_info{
             .codeSize = code.size(),
             .pCode = reinterpret_cast<const uint32_t*>(code.data()),
@@ -1681,8 +1681,8 @@ private:
                dynamic_features.extendedDynamicState;
     }
 
-    [[nodiscard]] auto query_swapchain_support(const vk::raii::PhysicalDevice& device) const noexcept
-        -> SwapChainSupportDetails {
+    [[nodiscard]] auto
+    query_swapchain_support(const vk::raii::PhysicalDevice& device) const noexcept -> SwapChainSupportDetails {
         return SwapChainSupportDetails{
             .capabilities = device.getSurfaceCapabilitiesKHR(*surface_),
             .formats = device.getSurfaceFormatsKHR(*surface_),
@@ -1690,22 +1690,22 @@ private:
         };
     }
 
-    [[nodiscard]] static auto choose_swap_surface_format(std::span<const vk::SurfaceFormatKHR> formats) noexcept
-        -> vk::SurfaceFormatKHR {
+    [[nodiscard]] static auto
+    choose_swap_surface_format(std::span<const vk::SurfaceFormatKHR> formats) noexcept -> vk::SurfaceFormatKHR {
         const auto it = std::ranges::find_if(formats, [](const auto& f) {
             return f.format == vk::Format::eB8G8R8A8Srgb && f.colorSpace == vk::ColorSpaceKHR::eSrgbNonlinear;
         });
         return it != formats.end() ? *it : formats.front();
     }
 
-    [[nodiscard]] static auto choose_swap_present_mode(std::span<const vk::PresentModeKHR> present_modes) noexcept
-        -> vk::PresentModeKHR {
+    [[nodiscard]] static auto
+    choose_swap_present_mode(std::span<const vk::PresentModeKHR> present_modes) noexcept -> vk::PresentModeKHR {
         const auto it = std::ranges::find(present_modes, vk::PresentModeKHR::eMailbox);
         return it != present_modes.end() ? *it : vk::PresentModeKHR::eFifo;
     }
 
-    [[nodiscard]] auto choose_swap_extent(const vk::SurfaceCapabilitiesKHR& capabilities) const noexcept
-        -> vk::Extent2D {
+    [[nodiscard]] auto
+    choose_swap_extent(const vk::SurfaceCapabilitiesKHR& capabilities) const noexcept -> vk::Extent2D {
         if (capabilities.currentExtent.width != std::numeric_limits<uint32_t>::max()) {
             return capabilities.currentExtent;
         }
@@ -1720,8 +1720,8 @@ private:
         };
     }
 
-    [[nodiscard]] auto find_queue_families(const vk::raii::PhysicalDevice& device) const noexcept
-        -> Result<QueueFamilyIndices> {
+    [[nodiscard]] auto
+    find_queue_families(const vk::raii::PhysicalDevice& device) const noexcept -> Result<QueueFamilyIndices> {
         QueueFamilyIndices indices{};
         const auto queue_families = device.getQueueFamilyProperties();
 

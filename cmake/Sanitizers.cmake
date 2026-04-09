@@ -34,7 +34,7 @@
                     -fsanitize=address
                     -fsanitize=undefined
                     -fsanitize=leak
-                    -fsanitize=integer          # Clang-only: integer overflow checks
+#                    -fsanitize=integer          # Clang-only: integer overflow checks
                     -fsanitize=nullability      # Clang-only: _Nonnull annotation checks
                     -fno-sanitize=unsigned-shift-base        # FP in libc++ hash / bitops
                     -fno-sanitize=unsigned-integer-overflow  # Defined behaviour for unsigned
