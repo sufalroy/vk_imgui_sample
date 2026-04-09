@@ -1,8 +1,5 @@
 #include <vulkan/vulkan_raii.hpp>
 
-#define GLFW_INCLUDE_VULKAN
-#include <GLFW/glfw3.h>
-
 #include <algorithm>
 #include <array>
 #include <expected>
@@ -13,17 +10,27 @@
 #include <string_view>
 #include <vector>
 
+#include <chrono>
 #include <filesystem>
 #include <format>
 #include <fstream>
-#include <glm/glm.hpp>
 #include <iostream>
 #include <print>
 #include <unordered_set>
 
+#define GLFW_INCLUDE_VULKAN
+#include <GLFW/glfw3.h>
+
+#define GLM_FORCE_RADIANS
+#include <glm/glm.hpp>
+#include <glm/gtc/matrix_transform.hpp>
+
+#define STB_IMAGE_IMPLEMENTATION
+#include "stb_image.h"
+
 constexpr uint32_t WIDTH = 800;
 constexpr uint32_t HEIGHT = 600;
-constexpr uint32_t MAX_FRAMES_IN_FLIGHT = 2;
+constexpr uint32_t MAX_FRAMES_IN_FLIGHT = 3;
 
 constexpr std::array VALIDATION_LAYERS = {"VK_LAYER_KHRONOS_validation"};
 constexpr std::array DEVICE_EXTENSIONS = {vk::KHRSwapchainExtensionName};
@@ -64,6 +71,13 @@ enum class ErrorCode {
     BufferCreationFailed,
     MemoryTypeNotFound,
     MemoryAllocationFailed,
+    DescriptorSetLayoutCreationFailed,
+    DescriptorPoolCreationFailed,
+    DescriptorSetAllocationFailed,
+    ImageCreationFailed,
+    TextureLoadFailed,
+    UnsupportedLayoutTransition,
+    SamplerCreationFailed
 };
 
 struct Error {
@@ -110,6 +124,7 @@ struct SwapChainSupportDetails {
 struct Vertex {
     glm::vec2 pos;
     glm::vec3 color;
+    glm::vec2 tex_coord;
 
     [[nodiscard]] static constexpr auto get_binding_description() noexcept -> vk::VertexInputBindingDescription {
         return vk::VertexInputBindingDescription{
@@ -120,35 +135,48 @@ struct Vertex {
     }
 
     [[nodiscard]] static constexpr auto get_attribute_descriptions() noexcept
-        -> std::array<vk::VertexInputAttributeDescription, 2> {
-        return {
-            vk::VertexInputAttributeDescription{
-                .location = 0,
-                .binding = 0,
-                .format = vk::Format::eR32G32Sfloat,
-                .offset = offsetof(Vertex, pos),
-            },
-            vk::VertexInputAttributeDescription{
-                .location = 1,
-                .binding = 0,
-                .format = vk::Format::eR32G32B32Sfloat,
-                .offset = offsetof(Vertex, color),
-            },
-        };
+        -> std::array<vk::VertexInputAttributeDescription, 3> {
+        return {vk::VertexInputAttributeDescription{
+                    .location = 0,
+                    .binding = 0,
+                    .format = vk::Format::eR32G32Sfloat,
+                    .offset = offsetof(Vertex, pos),
+                },
+                vk::VertexInputAttributeDescription{
+                    .location = 1,
+                    .binding = 0,
+                    .format = vk::Format::eR32G32B32Sfloat,
+                    .offset = offsetof(Vertex, color),
+                },
+                vk::VertexInputAttributeDescription{
+                    .location = 2,
+                    .binding = 0,
+                    .format = vk::Format::eR32G32Sfloat,
+                    .offset = offsetof(Vertex, tex_coord),
+                }};
     }
 };
 
-const std::vector<Vertex> VERTICES = {
-    {{-0.5f, -0.5f}, {1.0f, 0.0f, 0.0f}},
-    {{0.5f, -0.5f}, {0.0f, 1.0f, 0.0f}},
-    {{0.5f, 0.5f}, {0.0f, 0.0f, 1.0f}},
-    {{-0.5f, 0.5f}, {1.0f, 1.0f, 1.0f}}
-};
+const std::vector<Vertex> VERTICES = {{{-0.5f, -0.5f}, {1.0f, 0.0f, 0.0f}, {1.0f, 0.0f}},
+                                      {{0.5f, -0.5f}, {0.0f, 1.0f, 0.0f}, {0.0f, 0.0f}},
+                                      {{0.5f, 0.5f}, {0.0f, 0.0f, 1.0f}, {0.0f, 1.0f}},
+                                      {{-0.5f, 0.5f}, {1.0f, 1.0f, 1.0f}, {1.0f, 1.0f}}};
 
 const std::vector<uint16_t> INDICES = {0, 1, 2, 2, 3, 0};
 
+struct UniformBufferObject {
+    alignas(16) glm::mat4 model;
+    alignas(16) glm::mat4 view;
+    alignas(16) glm::mat4 proj;
+};
+
 struct BufferAllocation {
     vk::raii::Buffer buffer{nullptr};
+    vk::raii::DeviceMemory memory{nullptr};
+};
+
+struct ImageAllocation {
+    vk::raii::Image image{nullptr};
     vk::raii::DeviceMemory memory{nullptr};
 };
 
@@ -231,7 +259,11 @@ private:
             return std::unexpected(result.error());
         }
 
-        if (auto result = create_image_views(); !result) {
+        if (auto result = create_swapchain_image_views(); !result) {
+            return std::unexpected(result.error());
+        }
+
+        if (auto result = create_descriptor_set_layout(); !result) {
             return std::unexpected(result.error());
         }
 
@@ -243,11 +275,15 @@ private:
             return std::unexpected(result.error());
         }
 
-        if (auto result = create_command_buffers(); !result) {
+        if (auto result = create_texture_image(); !result) {
             return std::unexpected(result.error());
         }
 
-        if (auto result = create_sync_objects(); !result) {
+        if (auto result = create_texture_image_view(); !result) {
+            return std::unexpected(result.error());
+        }
+
+        if (auto result = create_texture_sampler(); !result) {
             return std::unexpected(result.error());
         }
 
@@ -256,6 +292,26 @@ private:
         }
 
         if (auto result = create_index_buffer(); !result) {
+            return std::unexpected(result.error());
+        }
+
+        if (auto result = create_uniform_buffers(); !result) {
+            return std::unexpected(result.error());
+        }
+
+        if (auto result = create_descriptor_pool(); !result) {
+            return std::unexpected(result.error());
+        }
+
+        if (auto result = create_descriptor_sets(); !result) {
+            return std::unexpected(result.error());
+        }
+
+        if (auto result = create_command_buffers(); !result) {
+            return std::unexpected(result.error());
+        }
+
+        if (auto result = create_sync_objects(); !result) {
             return std::unexpected(result.error());
         }
 
@@ -390,7 +446,7 @@ private:
                            vk::PhysicalDeviceVulkan13Features,
                            vk::PhysicalDeviceExtendedDynamicStateFeaturesEXT>
             feature_chain = {
-                {},
+                {.features = {.samplerAnisotropy = vk::True}},
                 {.shaderDrawParameters = vk::True},
                 {.synchronization2 = vk::True, .dynamicRendering = vk::True},
                 {.extendedDynamicState = vk::True},
@@ -510,7 +566,7 @@ private:
             return std::unexpected(result.error());
         }
 
-        if (auto result = create_image_views(); !result) {
+        if (auto result = create_swapchain_image_views(); !result) {
             return std::unexpected(result.error());
         }
 
@@ -531,40 +587,86 @@ private:
         return {};
     }
 
-    auto create_image_views() noexcept -> Result<> {
+    [[nodiscard]] auto create_image_view(const vk::Image& image, vk::Format format) noexcept
+        -> Result<vk::raii::ImageView> {
+        vk::ImageViewCreateInfo create_info{
+            .image = image,
+            .viewType = vk::ImageViewType::e2D,
+            .format = format,
+            .components =
+                {
+                    .r = vk::ComponentSwizzle::eIdentity,
+                    .g = vk::ComponentSwizzle::eIdentity,
+                    .b = vk::ComponentSwizzle::eIdentity,
+                    .a = vk::ComponentSwizzle::eIdentity,
+                },
+            .subresourceRange =
+                {
+                    .aspectMask = vk::ImageAspectFlagBits::eColor,
+                    .baseMipLevel = 0,
+                    .levelCount = 1,
+                    .baseArrayLayer = 0,
+                    .layerCount = 1,
+                },
+        };
+        auto result = device_.createImageView(create_info);
+        if (!result.has_value()) {
+            return std::unexpected(
+                Error{.code = ErrorCode::ImageViewCreationFailed,
+                      .message = std::format("Failed to create image view: {}", vk::to_string(result.error())),
+                      .vk_result = result.error()});
+        }
+        return std::move(*result);
+    }
+
+    auto create_swapchain_image_views() noexcept -> Result<> {
+        swapchain_image_views_.clear();
         swapchain_image_views_.reserve(swapchain_images_.size());
 
         for (const auto& image : swapchain_images_) {
-            vk::ImageViewCreateInfo create_info{
-                .image = image,
-                .viewType = vk::ImageViewType::e2D,
-                .format = swapchain_format_,
-                .components =
-                    {
-                        .r = vk::ComponentSwizzle::eIdentity,
-                        .g = vk::ComponentSwizzle::eIdentity,
-                        .b = vk::ComponentSwizzle::eIdentity,
-                        .a = vk::ComponentSwizzle::eIdentity,
-                    },
-                .subresourceRange =
-                    {
-                        .aspectMask = vk::ImageAspectFlagBits::eColor,
-                        .baseMipLevel = 0,
-                        .levelCount = 1,
-                        .baseArrayLayer = 0,
-                        .layerCount = 1,
-                    },
-            };
-            auto result = device_.createImageView(create_info);
-            if (!result.has_value()) {
-                return std::unexpected(
-                    Error{.code = ErrorCode::ImageViewCreationFailed,
-                          .message = std::format("Failed to create image view: {}", vk::to_string(result.error())),
-                          .vk_result = result.error()});
+            auto view_result = create_image_view(image, swapchain_format_);
+            if (!view_result.has_value()) {
+                return std::unexpected(view_result.error());
             }
-            swapchain_image_views_.emplace_back(std::move(*result));
+
+            swapchain_image_views_.emplace_back(std::move(*view_result));
         }
 
+        return {};
+    }
+
+    auto create_descriptor_set_layout() noexcept -> Result<> {
+        std::array bindings{
+            vk::DescriptorSetLayoutBinding{
+                .binding = 0,
+                .descriptorType = vk::DescriptorType::eUniformBuffer,
+                .descriptorCount = 1,
+                .stageFlags = vk::ShaderStageFlagBits::eVertex,
+                .pImmutableSamplers = nullptr,
+
+            },
+            vk::DescriptorSetLayoutBinding{
+                .binding = 1,
+                .descriptorType = vk::DescriptorType::eCombinedImageSampler,
+                .descriptorCount = 1,
+                .stageFlags = vk::ShaderStageFlagBits::eFragment,
+                .pImmutableSamplers = nullptr,
+            },
+        };
+
+        auto result = device_.createDescriptorSetLayout(vk::DescriptorSetLayoutCreateInfo{
+            .bindingCount = static_cast<uint32_t>(bindings.size()),
+            .pBindings = bindings.data(),
+        });
+        if (!result.has_value()) {
+            return std::unexpected(Error{
+                .code = ErrorCode::DescriptorSetLayoutCreationFailed,
+                .message = std::format("Failed to create descriptor set layout: {}", vk::to_string(result.error())),
+                .vk_result = result.error(),
+            });
+        }
+
+        descriptor_set_layout_ = std::move(*result);
         return {};
     }
 
@@ -613,7 +715,7 @@ private:
             .rasterizerDiscardEnable = vk::False,
             .polygonMode = vk::PolygonMode::eFill,
             .cullMode = vk::CullModeFlagBits::eBack,
-            .frontFace = vk::FrontFace::eClockwise,
+            .frontFace = vk::FrontFace::eCounterClockwise,
             .depthBiasEnable = vk::False,
             .lineWidth = 1.0F,
         };
@@ -640,7 +742,13 @@ private:
             .pDynamicStates = dynamic_states.data(),
         };
 
-        auto layout_result = device_.createPipelineLayout(vk::PipelineLayoutCreateInfo{});
+        const vk::PipelineLayoutCreateInfo layout_info{
+            .setLayoutCount = 1,
+            .pSetLayouts = &*descriptor_set_layout_,
+            .pushConstantRangeCount = 0,
+        };
+
+        auto layout_result = device_.createPipelineLayout(layout_info);
         if (!layout_result.has_value()) {
             return std::unexpected(Error{
                 .code = ErrorCode::PipelineLayoutCreationFailed,
@@ -705,11 +813,280 @@ private:
         return {};
     }
 
+    [[nodiscard]] auto begin_single_time_commands() noexcept -> Result<vk::raii::CommandBuffer> {
+        auto result = device_.allocateCommandBuffers(vk::CommandBufferAllocateInfo{
+            .commandPool = *command_pool_,
+            .level = vk::CommandBufferLevel::ePrimary,
+            .commandBufferCount = 1,
+        });
+        if (!result.has_value()) {
+            return std::unexpected(Error{
+                .code = ErrorCode::CommandBufferAllocationFailed,
+                .message =
+                    std::format("Failed to allocate single-time command buffer: {}", vk::to_string(result.error())),
+                .vk_result = result.error(),
+            });
+        }
+        auto cmd = std::move(result->front());
+        cmd.begin(vk::CommandBufferBeginInfo{
+            .flags = vk::CommandBufferUsageFlagBits::eOneTimeSubmit,
+        });
+
+        return cmd;
+    }
+
+    auto end_single_time_commands(vk::raii::CommandBuffer cmd) noexcept -> Result<> {
+        cmd.end();
+        graphics_queue_.submit(
+            vk::SubmitInfo{
+                .commandBufferCount = 1,
+                .pCommandBuffers = &*cmd,
+            },
+            nullptr);
+        graphics_queue_.waitIdle();
+        return {};
+    }
+
+    [[nodiscard]] auto create_image(uint32_t width,
+                                    uint32_t height,
+                                    vk::Format format,
+                                    vk::ImageTiling tiling,
+                                    vk::ImageUsageFlags usage,
+                                    vk::MemoryPropertyFlags properties) noexcept -> Result<ImageAllocation> {
+        auto image_result = device_.createImage(vk::ImageCreateInfo{
+            .imageType = vk::ImageType::e2D,
+            .format = format,
+            .extent = vk::Extent3D{width, height, 1},
+            .mipLevels = 1,
+            .arrayLayers = 1,
+            .samples = vk::SampleCountFlagBits::e1,
+            .tiling = tiling,
+            .usage = usage,
+            .sharingMode = vk::SharingMode::eExclusive,
+            .initialLayout = vk::ImageLayout::eUndefined,
+        });
+        if (!image_result.has_value()) {
+            return std::unexpected(Error{
+                .code = ErrorCode::ImageCreationFailed,
+                .message = std::format("Failed to create image: {}", vk::to_string(image_result.error())),
+                .vk_result = image_result.error(),
+            });
+        }
+
+        const auto mem_req = image_result->getMemoryRequirements();
+        const auto mem_type = find_memory_type(mem_req.memoryTypeBits, properties);
+        if (!mem_type.has_value()) {
+            return std::unexpected(Error{
+                .code = ErrorCode::MemoryTypeNotFound,
+                .message = "Failed to find suitable memory type for image",
+            });
+        }
+        auto memory_result = device_.allocateMemory(vk::MemoryAllocateInfo{
+            .allocationSize = mem_req.size,
+            .memoryTypeIndex = *mem_type,
+        });
+        if (!memory_result.has_value()) {
+            return std::unexpected(Error{
+                .code = ErrorCode::MemoryAllocationFailed,
+                .message = std::format("Failed to allocate memory for image: {}", vk::to_string(memory_result.error())),
+                .vk_result = memory_result.error(),
+            });
+        }
+
+        image_result->bindMemory(*memory_result, 0);
+
+        return ImageAllocation{std::move(*image_result), std::move(*memory_result)};
+    }
+
+    [[nodiscard]] auto transition_image_layout(const vk::raii::Image& image,
+                                               vk::ImageLayout old_layout,
+                                               vk::ImageLayout new_layout) noexcept -> Result<> {
+        auto cmd_result = begin_single_time_commands();
+        if (!cmd_result.has_value()) {
+            return std::unexpected(cmd_result.error());
+        }
+
+        vk::ImageMemoryBarrier barrier{
+            .oldLayout = old_layout,
+            .newLayout = new_layout,
+            .srcQueueFamilyIndex = vk::QueueFamilyIgnored,
+            .dstQueueFamilyIndex = vk::QueueFamilyIgnored,
+            .image = *image,
+            .subresourceRange =
+                {
+                    .aspectMask = vk::ImageAspectFlagBits::eColor,
+                    .baseMipLevel = 0,
+                    .levelCount = 1,
+                    .baseArrayLayer = 0,
+                    .layerCount = 1,
+                },
+        };
+        vk::PipelineStageFlags source_stage{};
+        vk::PipelineStageFlags destination_stage{};
+
+        if (old_layout == vk::ImageLayout::eUndefined && new_layout == vk::ImageLayout::eTransferDstOptimal) {
+            barrier.srcAccessMask = {};
+            barrier.dstAccessMask = vk::AccessFlagBits::eTransferWrite;
+            source_stage = vk::PipelineStageFlagBits::eTopOfPipe;
+            destination_stage = vk::PipelineStageFlagBits::eTransfer;
+        } else if (old_layout == vk::ImageLayout::eTransferDstOptimal &&
+                   new_layout == vk::ImageLayout::eShaderReadOnlyOptimal) {
+            barrier.srcAccessMask = vk::AccessFlagBits::eTransferWrite;
+            barrier.dstAccessMask = vk::AccessFlagBits::eShaderRead;
+            source_stage = vk::PipelineStageFlagBits::eTransfer;
+            destination_stage = vk::PipelineStageFlagBits::eFragmentShader;
+        } else {
+            return std::unexpected(Error{
+                .code = ErrorCode::UnsupportedLayoutTransition,
+                .message = std::format(
+                    "Unsupported layout transition: {} to {}", vk::to_string(old_layout), vk::to_string(new_layout)),
+            });
+        }
+
+        cmd_result->pipelineBarrier(source_stage, destination_stage, {}, nullptr, nullptr, barrier);
+        end_single_time_commands(std::move(*cmd_result));
+
+        return {};
+    }
+
+    auto copy_buffer_to_image(const vk::raii::Buffer& buffer,
+                              const vk::raii::Image& image,
+                              uint32_t width,
+                              uint32_t height) noexcept -> Result<> {
+        auto cmd_result = begin_single_time_commands();
+        if (!cmd_result.has_value()) {
+            return std::unexpected(cmd_result.error());
+        }
+        vk::BufferImageCopy region{
+            .bufferOffset = 0,
+            .bufferRowLength = 0,
+            .bufferImageHeight = 0,
+            .imageSubresource =
+                {
+                    .aspectMask = vk::ImageAspectFlagBits::eColor,
+                    .mipLevel = 0,
+                    .baseArrayLayer = 0,
+                    .layerCount = 1,
+                },
+            .imageOffset = vk::Offset3D{0, 0, 0},
+            .imageExtent = vk::Extent3D{width, height, 1},
+        };
+        cmd_result->copyBufferToImage(*buffer, *image, vk::ImageLayout::eTransferDstOptimal, region);
+        end_single_time_commands(std::move(*cmd_result));
+        return {};
+    }
+
+    auto create_texture_image() noexcept -> Result<> {
+        int tex_width{}, tex_height{}, tex_channels{};
+        stbi_uc* pixels = stbi_load("C:/Laboratory/cpp-workspace/vk_imgui_sample/assets/textures/texture.jpg",
+                                    &tex_width,
+                                    &tex_height,
+                                    &tex_channels,
+                                    STBI_rgb_alpha);
+        vk::DeviceSize image_size = static_cast<vk::DeviceSize>(tex_width) * tex_height * 4;
+
+        if (!pixels) {
+            return std::unexpected(Error{
+                .code = ErrorCode::FileReadFailed,
+                .message = std::format("Failed to load texture image: {}", stbi_failure_reason()),
+            });
+        }
+
+        auto staging =
+            create_buffer(image_size,
+                          vk::BufferUsageFlagBits::eTransferSrc,
+                          vk::MemoryPropertyFlagBits::eHostVisible | vk::MemoryPropertyFlagBits::eHostCoherent);
+
+        if (!staging.has_value()) {
+            return std::unexpected(staging.error());
+        }
+
+        void* data = staging->memory.mapMemory(0, image_size);
+        std::memcpy(data, pixels, static_cast<size_t>(image_size));
+        staging->memory.unmapMemory();
+
+        stbi_image_free(pixels);
+
+        auto texture = create_image(static_cast<uint32_t>(tex_width),
+                                    static_cast<uint32_t>(tex_height),
+                                    vk::Format::eR8G8B8A8Srgb,
+                                    vk::ImageTiling::eOptimal,
+                                    vk::ImageUsageFlagBits::eTransferDst | vk::ImageUsageFlagBits::eSampled,
+                                    vk::MemoryPropertyFlagBits::eDeviceLocal);
+        if (!texture.has_value()) {
+            return std::unexpected(texture.error());
+        }
+
+        if (auto r = transition_image_layout(
+                texture->image, vk::ImageLayout::eUndefined, vk::ImageLayout::eTransferDstOptimal);
+            !r) {
+            return std::unexpected(r.error());
+        }
+
+        if (auto r = copy_buffer_to_image(
+                staging->buffer, texture->image, static_cast<uint32_t>(tex_width), static_cast<uint32_t>(tex_height));
+            !r) {
+            return std::unexpected(r.error());
+        }
+
+        if (auto r = transition_image_layout(
+                texture->image, vk::ImageLayout::eTransferDstOptimal, vk::ImageLayout::eShaderReadOnlyOptimal);
+            !r) {
+            return std::unexpected(r.error());
+        }
+
+        texture_image_ = std::move(texture->image);
+        texture_image_memory_ = std::move(texture->memory);
+
+        return {};
+    }
+
+    auto create_texture_image_view() noexcept -> Result<> {
+        auto view_result = create_image_view(texture_image_, vk::Format::eR8G8B8A8Srgb);
+        if (!view_result.has_value()) {
+            return std::unexpected(view_result.error());
+        }
+        texture_image_view_ = std::move(*view_result);
+        return {};
+    }
+
+    auto create_texture_sampler() noexcept -> Result<> {
+        auto properties = physical_device_.getProperties();
+        vk::SamplerCreateInfo sampler_info{
+            .magFilter = vk::Filter::eLinear,
+            .minFilter = vk::Filter::eLinear,
+            .mipmapMode = vk::SamplerMipmapMode::eLinear,
+            .addressModeU = vk::SamplerAddressMode::eRepeat,
+            .addressModeV = vk::SamplerAddressMode::eRepeat,
+            .addressModeW = vk::SamplerAddressMode::eRepeat,
+            .mipLodBias = 0.0F,
+            .anisotropyEnable = vk::True,
+            .maxAnisotropy = properties.limits.maxSamplerAnisotropy,
+            .compareEnable = vk::False,
+            .compareOp = vk::CompareOp::eAlways,
+            .minLod = 0.0F,
+            .maxLod = 0.0F,
+            .borderColor = vk::BorderColor::eIntOpaqueBlack,
+            .unnormalizedCoordinates = vk::False,
+        };
+
+        auto result = device_.createSampler(sampler_info);
+        if (!result.has_value()) {
+            return std::unexpected(Error{
+                .code = ErrorCode::SamplerCreationFailed,
+                .message = std::format("Failed to create texture sampler: {}", vk::to_string(result.error())),
+                .vk_result = result.error(),
+            });
+        }
+        texture_sampler_ = std::move(*result);
+        return {};
+    }
+
     [[nodiscard]] auto find_memory_type(uint32_t type_filter, vk::MemoryPropertyFlags properties) const noexcept
         -> std::optional<uint32_t> {
         auto memory_properties = physical_device_.getMemoryProperties();
         for (uint32_t i = 0; i < memory_properties.memoryTypeCount; ++i) {
-            if ((type_filter & (1 << i)) &&
+            if ((type_filter & (1U << i)) &&
                 (memory_properties.memoryTypes[i].propertyFlags & properties) == properties) {
                 return i;
             }
@@ -759,32 +1136,14 @@ private:
 
     auto copy_buffer(const vk::raii::Buffer& src, const vk::raii::Buffer& dst, vk::DeviceSize size) noexcept
         -> Result<> {
-        auto cmd_result = device_.allocateCommandBuffers(vk::CommandBufferAllocateInfo{
-            .commandPool = *command_pool_,
-            .level = vk::CommandBufferLevel::ePrimary,
-            .commandBufferCount = 1,
-        });
+        auto cmd_result = begin_single_time_commands();
         if (!cmd_result.has_value()) {
-            return std::unexpected(Error{
-                .code = ErrorCode::CommandBufferAllocationFailed,
-                .message =
-                    std::format("Failed to allocate transfer command buffer: {}", vk::to_string(cmd_result.error())),
-                .vk_result = cmd_result.error(),
-            });
+            return std::unexpected(cmd_result.error());
         }
 
-        auto& cmd = cmd_result->front();
-        cmd.begin(vk::CommandBufferBeginInfo{
-            .flags = vk::CommandBufferUsageFlagBits::eOneTimeSubmit,
-        });
-        cmd.copyBuffer(src, dst, vk::BufferCopy{.size = size});
-        cmd.end();
+        cmd_result->copyBuffer(src, dst, vk::BufferCopy{.size = size});
 
-        graphics_queue_.submit(vk::SubmitInfo{
-            .commandBufferCount = 1,
-            .pCommandBuffers = &*cmd,
-        });
-        graphics_queue_.waitIdle();
+        end_single_time_commands(std::move(*cmd_result));
 
         return {};
     }
@@ -849,6 +1208,139 @@ private:
 
         index_buffer_ = std::move(index->buffer);
         index_buffer_memory_ = std::move(index->memory);
+
+        return {};
+    }
+
+    auto create_uniform_buffers() noexcept -> Result<> {
+        vk::DeviceSize buffer_size = sizeof(UniformBufferObject);
+
+        uniform_buffers_.reserve(MAX_FRAMES_IN_FLIGHT);
+        uniform_buffers_memory_.reserve(MAX_FRAMES_IN_FLIGHT);
+        uniform_buffers_mapped_.reserve(MAX_FRAMES_IN_FLIGHT);
+
+        for (uint32_t i = 0; i < MAX_FRAMES_IN_FLIGHT; ++i) {
+            auto allocation =
+                create_buffer(buffer_size,
+                              vk::BufferUsageFlagBits::eUniformBuffer,
+                              vk::MemoryPropertyFlagBits::eHostVisible | vk::MemoryPropertyFlagBits::eHostCoherent);
+
+            if (!allocation.has_value()) {
+                return std::unexpected(allocation.error());
+            }
+
+            void* mapped = allocation->memory.mapMemory(0, buffer_size);
+
+            uniform_buffers_.emplace_back(std::move(allocation->buffer));
+            uniform_buffers_memory_.emplace_back(std::move(allocation->memory));
+            uniform_buffers_mapped_.emplace_back(mapped);
+        }
+
+        return {};
+    }
+
+    auto update_uniform_buffer(uint32_t frame_index) noexcept -> void {
+        static const auto start_time = std::chrono::high_resolution_clock::now();
+        const auto current_time = std::chrono::high_resolution_clock::now();
+        const float elapsed = std::chrono::duration<float>(current_time - start_time).count();
+
+        UniformBufferObject ubo{};
+
+        ubo.model = glm::rotate(glm::mat4{1.0F}, elapsed * glm::radians(45.0F), glm::vec3{0.0F, 0.0F, 1.0F});
+
+        ubo.view = glm::lookAt(glm::vec3{2.0F, 2.0F, 2.0F}, glm::vec3{0.0F, 0.0F, 0.0F}, glm::vec3{0.0F, 0.0F, 1.0F});
+
+        ubo.proj =
+            glm::perspective(glm::radians(45.0F),
+                             static_cast<float>(swapchain_extent_.width) / static_cast<float>(swapchain_extent_.height),
+                             0.1F,
+                             10.0F);
+
+        ubo.proj[1][1] *= -1;
+
+        std::memcpy(uniform_buffers_mapped_[frame_index], &ubo, sizeof(ubo));
+    }
+
+    auto create_descriptor_pool() noexcept -> Result<> {
+        std::array pool_sizes{
+            vk::DescriptorPoolSize{
+                .type = vk::DescriptorType::eUniformBuffer,
+                .descriptorCount = MAX_FRAMES_IN_FLIGHT,
+            },
+            vk::DescriptorPoolSize{
+                .type = vk::DescriptorType::eCombinedImageSampler,
+                .descriptorCount = MAX_FRAMES_IN_FLIGHT,
+            },
+        };
+
+        auto result = device_.createDescriptorPool(vk::DescriptorPoolCreateInfo{
+            .flags = vk::DescriptorPoolCreateFlagBits::eFreeDescriptorSet,
+            .maxSets = MAX_FRAMES_IN_FLIGHT,
+            .poolSizeCount = static_cast<uint32_t>(pool_sizes.size()),
+            .pPoolSizes = pool_sizes.data(),
+        });
+        if (!result.has_value()) {
+            return std::unexpected(Error{
+                .code = ErrorCode::DescriptorPoolCreationFailed,
+                .message = std::format("Failed to create descriptor pool: {}", vk::to_string(result.error())),
+                .vk_result = result.error(),
+            });
+        }
+
+        descriptor_pool_ = std::move(*result);
+        return {};
+    }
+
+    auto create_descriptor_sets() noexcept -> Result<> {
+        const std::vector<vk::DescriptorSetLayout> layouts(MAX_FRAMES_IN_FLIGHT, *descriptor_set_layout_);
+
+        auto result = device_.allocateDescriptorSets(vk::DescriptorSetAllocateInfo{
+            .descriptorPool = *descriptor_pool_,
+            .descriptorSetCount = MAX_FRAMES_IN_FLIGHT,
+            .pSetLayouts = layouts.data(),
+        });
+        if (!result.has_value()) {
+            return std::unexpected(Error{
+                .code = ErrorCode::DescriptorSetAllocationFailed,
+                .message = std::format("Failed to allocate descriptor sets: {}", vk::to_string(result.error())),
+                .vk_result = result.error(),
+            });
+        }
+        descriptor_sets_ = std::move(*result);
+
+        for (uint32_t i = 0; i < MAX_FRAMES_IN_FLIGHT; ++i) {
+            const vk::DescriptorBufferInfo buffer_info{
+                .buffer = *uniform_buffers_[i],
+                .offset = 0,
+                .range = sizeof(UniformBufferObject),
+            };
+            const vk::DescriptorImageInfo image_info{
+                .sampler = *texture_sampler_,
+                .imageView = *texture_image_view_,
+                .imageLayout = vk::ImageLayout::eShaderReadOnlyOptimal,
+            };
+
+            std::array write_descriptors{
+                vk::WriteDescriptorSet{
+                    .dstSet = *descriptor_sets_[i],
+                    .dstBinding = 0,
+                    .dstArrayElement = 0,
+                    .descriptorCount = 1,
+                    .descriptorType = vk::DescriptorType::eUniformBuffer,
+                    .pBufferInfo = &buffer_info,
+                },
+                vk::WriteDescriptorSet{
+                    .dstSet = *descriptor_sets_[i],
+                    .dstBinding = 1,
+                    .dstArrayElement = 0,
+                    .descriptorCount = 1,
+                    .descriptorType = vk::DescriptorType::eCombinedImageSampler,
+                    .pImageInfo = &image_info,
+                },
+            };
+
+            device_.updateDescriptorSets(write_descriptors, {});
+        }
 
         return {};
     }
@@ -937,9 +1429,6 @@ private:
         });
 
         cmd.bindPipeline(vk::PipelineBindPoint::eGraphics, *graphics_pipeline_);
-        cmd.bindVertexBuffers(0, {*vertex_buffer_}, {0ULL});
-        cmd.bindIndexBuffer(*index_buffer_, 0, vk::IndexType::eUint16);
-
         cmd.setViewport(0,
                         vk::Viewport{
                             .x = 0.0F,
@@ -951,6 +1440,12 @@ private:
                         });
 
         cmd.setScissor(0, vk::Rect2D{.offset = {0, 0}, .extent = swapchain_extent_});
+
+        cmd.bindVertexBuffers(0, {*vertex_buffer_}, {0ULL});
+        cmd.bindIndexBuffer(*index_buffer_, 0, vk::IndexType::eUint16);
+
+        cmd.bindDescriptorSets(
+            vk::PipelineBindPoint::eGraphics, *pipeline_layout_, 0, {*descriptor_sets_[current_frame_]}, nullptr);
 
         cmd.drawIndexed(static_cast<uint32_t>(INDICES.size()), 1, 0, 0, 0);
 
@@ -1051,6 +1546,8 @@ private:
             return std::unexpected(r.error());
         }
 
+        update_uniform_buffer(current_frame_);
+
         device_.resetFences(*fence);
 
         const vk::PipelineStageFlags wait_stage = vk::PipelineStageFlagBits::eColorAttachmentOutput;
@@ -1149,6 +1646,7 @@ private:
 
     [[nodiscard]] auto is_device_suitable(const vk::raii::PhysicalDevice& physical_device) const noexcept -> bool {
         const auto device_properties = physical_device.getProperties();
+
         if (device_properties.apiVersion < VK_API_VERSION_1_3 ||
             device_properties.deviceType != vk::PhysicalDeviceType::eDiscreteGpu) {
             return false;
@@ -1159,6 +1657,7 @@ private:
             return std::ranges::any_of(available_extensions,
                                        [&](const auto& ext) { return required_name == ext.extensionName; });
         };
+
         if (!std::ranges::all_of(DEVICE_EXTENSIONS, supports_extension)) {
             return false;
         }
@@ -1172,11 +1671,13 @@ private:
                                                                 vk::PhysicalDeviceVulkan13Features,
                                                                 vk::PhysicalDeviceExtendedDynamicStateFeaturesEXT>();
 
+        const auto& core_features = feature_chain.get<vk::PhysicalDeviceFeatures2>().features;
         const auto& vk11_features = feature_chain.get<vk::PhysicalDeviceVulkan11Features>();
         const auto& vk13_features = feature_chain.get<vk::PhysicalDeviceVulkan13Features>();
         const auto& dynamic_features = feature_chain.get<vk::PhysicalDeviceExtendedDynamicStateFeaturesEXT>();
 
-        return vk11_features.shaderDrawParameters && vk13_features.synchronization2 && vk13_features.dynamicRendering &&
+        return core_features.samplerAnisotropy && vk11_features.shaderDrawParameters &&
+               vk13_features.synchronization2 && vk13_features.dynamicRendering &&
                dynamic_features.extendedDynamicState;
     }
 
@@ -1365,8 +1866,26 @@ private:
     vk::Format swapchain_format_ = vk::Format::eUndefined;
     vk::Extent2D swapchain_extent_{};
 
+    vk::raii::DescriptorSetLayout descriptor_set_layout_{nullptr};
     vk::raii::PipelineLayout pipeline_layout_{nullptr};
     vk::raii::Pipeline graphics_pipeline_{nullptr};
+
+    vk::raii::Image texture_image_{nullptr};
+    vk::raii::DeviceMemory texture_image_memory_{nullptr};
+    vk::raii::ImageView texture_image_view_{nullptr};
+    vk::raii::Sampler texture_sampler_{nullptr};
+
+    vk::raii::Buffer vertex_buffer_{nullptr};
+    vk::raii::DeviceMemory vertex_buffer_memory_{nullptr};
+    vk::raii::Buffer index_buffer_{nullptr};
+    vk::raii::DeviceMemory index_buffer_memory_{nullptr};
+
+    std::vector<vk::raii::Buffer> uniform_buffers_;
+    std::vector<vk::raii::DeviceMemory> uniform_buffers_memory_;
+    std::vector<void*> uniform_buffers_mapped_;
+
+    vk::raii::DescriptorPool descriptor_pool_{nullptr};
+    std::vector<vk::raii::DescriptorSet> descriptor_sets_;
 
     vk::raii::CommandPool command_pool_{nullptr};
     std::vector<vk::raii::CommandBuffer> command_buffers_;
@@ -1377,11 +1896,6 @@ private:
 
     uint32_t current_frame_{0};
     bool framebuffer_resized_{false};
-
-    vk::raii::Buffer vertex_buffer_{nullptr};
-    vk::raii::DeviceMemory vertex_buffer_memory_{nullptr};
-    vk::raii::Buffer index_buffer_{nullptr};
-    vk::raii::DeviceMemory index_buffer_memory_{nullptr};
 };
 
 auto main() -> int {
