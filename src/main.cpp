@@ -21,6 +21,7 @@
 #define GLFW_INCLUDE_VULKAN
 #include <GLFW/glfw3.h>
 
+#define GLM_FORCE_DEPTH_ZERO_TO_ONE
 #define GLM_FORCE_RADIANS
 #include <glm/glm.hpp>
 #include <glm/gtc/matrix_transform.hpp>
@@ -122,7 +123,7 @@ struct SwapChainSupportDetails {
 };
 
 struct Vertex {
-    glm::vec2 pos;
+    glm::vec3 pos;
     glm::vec3 color;
     glm::vec2 tex_coord;
 
@@ -139,7 +140,7 @@ struct Vertex {
         return {vk::VertexInputAttributeDescription{
                     .location = 0,
                     .binding = 0,
-                    .format = vk::Format::eR32G32Sfloat,
+                    .format = vk::Format::eR32G32B32Sfloat,
                     .offset = offsetof(Vertex, pos),
                 },
                 vk::VertexInputAttributeDescription{
@@ -157,12 +158,20 @@ struct Vertex {
     }
 };
 
-const std::vector<Vertex> VERTICES = {{.pos = {-0.5F, -0.5F}, .color = {1.0F, 0.0F, 0.0F}, .tex_coord = {1.0F, 0.0F}},
-                                      {.pos = {0.5F, -0.5F}, .color = {0.0F, 1.0F, 0.0F}, .tex_coord = {0.0F, 0.0F}},
-                                      {.pos = {0.5F, 0.5F}, .color = {0.0F, 0.0F, 1.0F}, .tex_coord = {0.0F, 1.0F}},
-                                      {.pos = {-0.5F, 0.5F}, .color = {1.0F, 1.0F, 1.0F}, .tex_coord = {1.0F, 1.0F}}};
+const std::vector<Vertex> VERTICES = {
+    {.pos = {-0.5F, -0.5F, 0.0F}, .color = {1.0F, 0.0F, 0.0F}, .tex_coord = {0.0F, 0.0F}},
+    {.pos = {0.5F, -0.5F, 0.0F}, .color = {0.0F, 1.0F, 0.0F}, .tex_coord = {1.0F, 0.0F}},
+    {.pos = {0.5F, 0.5F, 0.0F}, .color = {0.0F, 0.0F, 1.0F}, .tex_coord = {1.0F, 1.0F}},
+    {.pos = {-0.5F, 0.5F, 0.0F}, .color = {1.0F, 1.0F, 1.0F}, .tex_coord = {0.0F, 1.0F}},
 
-const std::vector<uint16_t> INDICES = {0, 1, 2, 2, 3, 0};
+    {.pos = {-0.5F, -0.5F, -0.5F}, .color = {1.0F, 0.0F, 0.0F}, .tex_coord = {0.0F, 0.0F}},
+    {.pos = {0.5F, -0.5F, -0.5F}, .color = {0.0F, 1.0F, 0.0F}, .tex_coord = {1.0F, 0.0F}},
+    {.pos = {0.5F, 0.5F, -0.5F}, .color = {0.0F, 0.0F, 1.0F}, .tex_coord = {1.0F, 1.0F}},
+    {.pos = {-0.5F, 0.5F, -0.5F}, .color = {1.0F, 1.0F, 1.0F}, .tex_coord = {0.0F, 1.0F}},
+
+};
+
+const std::vector<uint16_t> INDICES = {0, 1, 2, 2, 3, 0, 4, 5, 6, 6, 7, 4};
 
 struct UniformBufferObject {
     alignas(16) glm::mat4 model;
@@ -1052,7 +1061,7 @@ private:
 
     auto create_texture_sampler() noexcept -> Result<> {
         auto properties = physical_device_.getProperties();
-        vk::SamplerCreateInfo sampler_info{
+        const vk::SamplerCreateInfo sampler_info{
             .magFilter = vk::Filter::eLinear,
             .minFilter = vk::Filter::eLinear,
             .mipmapMode = vk::SamplerMipmapMode::eLinear,
@@ -1292,7 +1301,7 @@ private:
     }
 
     auto create_descriptor_sets() noexcept -> Result<> {
-        const std::vector<vk::DescriptorSetLayout> layouts(MAX_FRAMES_IN_FLIGHT, *descriptor_set_layout_);
+        const std::vector layouts(MAX_FRAMES_IN_FLIGHT, *descriptor_set_layout_);
 
         auto result = device_.allocateDescriptorSets(vk::DescriptorSetAllocateInfo{
             .descriptorPool = *descriptor_pool_,

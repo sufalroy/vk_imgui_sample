@@ -1,5 +1,5 @@
 struct VSInput {
-    float2 position : POSITION;
+    float3 position : POSITION;
     float3 color    : COLOR;
     float2 uv       : TEXCOORD0;
 };
@@ -23,7 +23,7 @@ VSOutput vertMain(VSInput input) {
     VSOutput output;
     output.sv_position = mul(ubo.proj,
                          mul(ubo.view,
-                         mul(ubo.model, float4(input.position, 0.0, 1.0))));
+                         mul(ubo.model, float4(input.position, 1.0))));
     output.color = input.color;
     output.frag_uv = input.uv;
     return output;
