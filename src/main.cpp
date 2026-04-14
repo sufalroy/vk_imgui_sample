@@ -21,6 +21,9 @@
 #define GLFW_INCLUDE_VULKAN
 #include <GLFW/glfw3.h>
 
+#define GLM_ENABLE_EXPERIMENTAL
+#include <glm/gtx/hash.hpp>
+
 #define GLM_FORCE_DEPTH_ZERO_TO_ONE
 #define GLM_FORCE_RADIANS
 #include <glm/glm.hpp>
@@ -29,9 +32,16 @@
 #define STB_IMAGE_IMPLEMENTATION
 #include "stb_image.h"
 
+#define TINYOBJLOADER_IMPLEMENTATION
+#include "tiny_obj_loader.h"
+
 constexpr uint32_t WIDTH = 800;
 constexpr uint32_t HEIGHT = 600;
-constexpr uint32_t MAX_FRAMES_IN_FLIGHT = 3;
+constexpr uint32_t MAX_FRAMES_IN_FLIGHT = 2;
+
+constexpr std::string_view MODEL_PATH = "C:/Laboratory/cpp-workspace/vk_imgui_sample/assets/models/model.obj";
+constexpr std::string_view TEXTURE_PATH = "C:/Laboratory/cpp-workspace/vk_imgui_sample/assets/textures/texture.png";
+constexpr std::string_view SHADER_PATH = "C:/Laboratory/cpp-workspace/vk_imgui_sample/assets/shaders/triangle.spv";
 
 constexpr std::array VALIDATION_LAYERS = {"VK_LAYER_KHRONOS_validation"};
 constexpr std::array DEVICE_EXTENSIONS = {vk::KHRSwapchainExtensionName};
@@ -78,7 +88,9 @@ enum class ErrorCode {
     ImageCreationFailed,
     TextureLoadFailed,
     UnsupportedLayoutTransition,
-    SamplerCreationFailed
+    SamplerCreationFailed,
+    NoSupportedDepthFormat,
+    ModelLoadFailed,
 };
 
 struct Error {
@@ -135,8 +147,8 @@ struct Vertex {
         };
     }
 
-    [[nodiscard]] static constexpr auto
-    get_attribute_descriptions() noexcept -> std::array<vk::VertexInputAttributeDescription, 3> {
+    [[nodiscard]] static constexpr auto get_attribute_descriptions() noexcept
+        -> std::array<vk::VertexInputAttributeDescription, 3> {
         return {vk::VertexInputAttributeDescription{
                     .location = 0,
                     .binding = 0,
@@ -156,22 +168,22 @@ struct Vertex {
                     .offset = offsetof(Vertex, tex_coord),
                 }};
     }
+
+    [[nodiscard]] auto operator==(const Vertex& other) const noexcept -> bool {
+        return pos == other.pos && tex_coord == other.tex_coord;
+    }
 };
 
-const std::vector<Vertex> VERTICES = {
-    {.pos = {-0.5F, -0.5F, 0.0F}, .color = {1.0F, 0.0F, 0.0F}, .tex_coord = {0.0F, 0.0F}},
-    {.pos = {0.5F, -0.5F, 0.0F}, .color = {0.0F, 1.0F, 0.0F}, .tex_coord = {1.0F, 0.0F}},
-    {.pos = {0.5F, 0.5F, 0.0F}, .color = {0.0F, 0.0F, 1.0F}, .tex_coord = {1.0F, 1.0F}},
-    {.pos = {-0.5F, 0.5F, 0.0F}, .color = {1.0F, 1.0F, 1.0F}, .tex_coord = {0.0F, 1.0F}},
-
-    {.pos = {-0.5F, -0.5F, -0.5F}, .color = {1.0F, 0.0F, 0.0F}, .tex_coord = {0.0F, 0.0F}},
-    {.pos = {0.5F, -0.5F, -0.5F}, .color = {0.0F, 1.0F, 0.0F}, .tex_coord = {1.0F, 0.0F}},
-    {.pos = {0.5F, 0.5F, -0.5F}, .color = {0.0F, 0.0F, 1.0F}, .tex_coord = {1.0F, 1.0F}},
-    {.pos = {-0.5F, 0.5F, -0.5F}, .color = {1.0F, 1.0F, 1.0F}, .tex_coord = {0.0F, 1.0F}},
-
+namespace std {
+template <>
+struct hash<Vertex> {
+    [[nodiscard]] auto operator()(const Vertex& vertex) const noexcept -> size_t {
+        size_t h1 = std::hash<glm::vec3>{}(vertex.pos);
+        size_t h2 = std::hash<glm::vec2>{}(vertex.tex_coord);
+        return h1 ^ (h2 + 0x9e3779b9 + (h1 << 6) + (h1 >> 2));
+    }
 };
-
-const std::vector<uint16_t> INDICES = {0, 1, 2, 2, 3, 0, 4, 5, 6, 6, 7, 4};
+} // namespace std
 
 struct UniformBufferObject {
     alignas(16) glm::mat4 model;
@@ -284,6 +296,10 @@ private:
             return std::unexpected(result.error());
         }
 
+        if (auto result = create_depth_resources(); !result) {
+            return std::unexpected(result.error());
+        }
+
         if (auto result = create_texture_image(); !result) {
             return std::unexpected(result.error());
         }
@@ -293,6 +309,10 @@ private:
         }
 
         if (auto result = create_texture_sampler(); !result) {
+            return std::unexpected(result.error());
+        }
+
+        if (auto result = load_model(); !result) {
             return std::unexpected(result.error());
         }
 
@@ -552,6 +572,10 @@ private:
     }
 
     auto cleanup_swapchain() noexcept -> void {
+        depth_image_view_ = nullptr;
+        depth_image_ = nullptr;
+        depth_image_memory_ = nullptr;
+
         swapchain_image_views_.clear();
         swapchain_images_.clear();
         swapchain_ = nullptr;
@@ -568,7 +592,6 @@ private:
         }
 
         device_.waitIdle();
-
         cleanup_swapchain();
 
         if (auto result = create_swap_chain(); !result) {
@@ -576,6 +599,10 @@ private:
         }
 
         if (auto result = create_swapchain_image_views(); !result) {
+            return std::unexpected(result.error());
+        }
+
+        if (auto result = create_depth_resources(); !result) {
             return std::unexpected(result.error());
         }
 
@@ -597,7 +624,8 @@ private:
     }
 
     [[nodiscard]] auto create_image_view(const vk::Image& image,
-                                         vk::Format format) noexcept -> Result<vk::raii::ImageView> {
+                                         vk::Format format,
+                                         vk::ImageAspectFlags aspect_flags) noexcept -> Result<vk::raii::ImageView> {
         vk::ImageViewCreateInfo create_info{
             .image = image,
             .viewType = vk::ImageViewType::e2D,
@@ -611,7 +639,7 @@ private:
                 },
             .subresourceRange =
                 {
-                    .aspectMask = vk::ImageAspectFlagBits::eColor,
+                    .aspectMask = aspect_flags,
                     .baseMipLevel = 0,
                     .levelCount = 1,
                     .baseArrayLayer = 0,
@@ -633,7 +661,7 @@ private:
         swapchain_image_views_.reserve(swapchain_images_.size());
 
         for (const auto& image : swapchain_images_) {
-            auto view_result = create_image_view(image, swapchain_format_);
+            auto view_result = create_image_view(image, swapchain_format_, vk::ImageAspectFlagBits::eColor);
             if (!view_result.has_value()) {
                 return std::unexpected(view_result.error());
             }
@@ -680,7 +708,7 @@ private:
     }
 
     auto create_graphics_pipeline() noexcept -> Result<> {
-        auto spirv = read_file("/home/dev/Laboratory/cpp_workspace/vk_imgui_sample/assets/shaders/triangle.spv");
+        auto spirv = read_file(SHADER_PATH);
         if (!spirv) {
             return std::unexpected(spirv.error());
         }
@@ -768,8 +796,24 @@ private:
 
         pipeline_layout_ = std::move(*layout_result);
 
-        const vk::StructureChain<vk::GraphicsPipelineCreateInfo, vk::PipelineRenderingCreateInfo> pipeline_create_info{
-            {
+        const auto depth_format = find_depth_format();
+        if (!depth_format.has_value()) {
+            return std::unexpected(Error{
+                .code = ErrorCode::NoSupportedDepthFormat,
+                .message = "Failed to find a supported depth format",
+            });
+        }
+
+        constexpr vk::PipelineDepthStencilStateCreateInfo depth_stencil{
+            .depthTestEnable = vk::True,
+            .depthWriteEnable = vk::True,
+            .depthCompareOp = vk::CompareOp::eLess,
+            .depthBoundsTestEnable = vk::False,
+            .stencilTestEnable = vk::False,
+        };
+
+        const vk::StructureChain<vk::GraphicsPipelineCreateInfo, vk::PipelineRenderingCreateInfo> pipeline_create_info(
+            vk::GraphicsPipelineCreateInfo{
                 .stageCount = static_cast<uint32_t>(shader_stages.size()),
                 .pStages = shader_stages.data(),
                 .pVertexInputState = &vertex_input_info,
@@ -777,16 +821,17 @@ private:
                 .pViewportState = &viewport_state,
                 .pRasterizationState = &rasterizer,
                 .pMultisampleState = &multisampling,
+                .pDepthStencilState = &depth_stencil,
                 .pColorBlendState = &color_blending,
                 .pDynamicState = &dynamic_state_info,
                 .layout = *pipeline_layout_,
                 .renderPass = nullptr,
             },
-            {
+            vk::PipelineRenderingCreateInfo{
                 .colorAttachmentCount = 1,
                 .pColorAttachmentFormats = &swapchain_format_,
-            },
-        };
+                .depthAttachmentFormat = *depth_format,
+            });
 
         auto pipeline_result =
             device_.createGraphicsPipeline(nullptr, pipeline_create_info.get<vk::GraphicsPipelineCreateInfo>());
@@ -819,6 +864,38 @@ private:
             });
         }
         command_pool_ = std::move(*result);
+        return {};
+    }
+
+    auto create_depth_resources() noexcept -> Result<> {
+        const auto depth_format = find_depth_format();
+        if (!depth_format.has_value()) {
+            return std::unexpected(Error{
+                .code = ErrorCode::NoSupportedDepthFormat,
+                .message = "Failed to find a supported depth format",
+            });
+        }
+
+        auto depth_image = create_image(swapchain_extent_.width,
+                                        swapchain_extent_.height,
+                                        *depth_format,
+                                        vk::ImageTiling::eOptimal,
+                                        vk::ImageUsageFlagBits::eDepthStencilAttachment,
+                                        vk::MemoryPropertyFlagBits::eDeviceLocal);
+
+        if (!depth_image.has_value()) {
+            return std::unexpected(depth_image.error());
+        }
+
+        auto view_result = create_image_view(*depth_image->image, *depth_format, vk::ImageAspectFlagBits::eDepth);
+        if (!view_result.has_value()) {
+            return std::unexpected(view_result.error());
+        }
+
+        depth_image_ = std::move(depth_image->image);
+        depth_image_memory_ = std::move(depth_image->memory);
+        depth_image_view_ = std::move(*view_result);
+
         return {};
     }
 
@@ -907,9 +984,9 @@ private:
         return ImageAllocation{std::move(*image_result), std::move(*memory_result)};
     }
 
-    [[nodiscard]] auto transition_image_layout(const vk::raii::Image& image,
-                                               vk::ImageLayout old_layout,
-                                               vk::ImageLayout new_layout) noexcept -> Result<> {
+    [[nodiscard]] auto transition_image_layout_immediate(const vk::raii::Image& image,
+                                                         vk::ImageLayout old_layout,
+                                                         vk::ImageLayout new_layout) noexcept -> Result<> {
         auto cmd_result = begin_single_time_commands();
         if (!cmd_result.has_value()) {
             return std::unexpected(cmd_result.error());
@@ -987,11 +1064,7 @@ private:
 
     auto create_texture_image() noexcept -> Result<> {
         int tex_width{}, tex_height{}, tex_channels{};
-        stbi_uc* pixels = stbi_load("/home/dev/Laboratory/cpp_workspace/vk_imgui_sample/assets/textures/texture.png",
-                                    &tex_width,
-                                    &tex_height,
-                                    &tex_channels,
-                                    STBI_rgb_alpha);
+        stbi_uc* pixels = stbi_load(TEXTURE_PATH.data(), &tex_width, &tex_height, &tex_channels, STBI_rgb_alpha);
         vk::DeviceSize image_size = static_cast<vk::DeviceSize>(tex_width) * tex_height * 4;
 
         if (!pixels) {
@@ -1026,7 +1099,7 @@ private:
             return std::unexpected(texture.error());
         }
 
-        if (auto r = transition_image_layout(
+        if (auto r = transition_image_layout_immediate(
                 texture->image, vk::ImageLayout::eUndefined, vk::ImageLayout::eTransferDstOptimal);
             !r) {
             return std::unexpected(r.error());
@@ -1038,7 +1111,7 @@ private:
             return std::unexpected(r.error());
         }
 
-        if (auto r = transition_image_layout(
+        if (auto r = transition_image_layout_immediate(
                 texture->image, vk::ImageLayout::eTransferDstOptimal, vk::ImageLayout::eShaderReadOnlyOptimal);
             !r) {
             return std::unexpected(r.error());
@@ -1051,7 +1124,8 @@ private:
     }
 
     auto create_texture_image_view() noexcept -> Result<> {
-        auto view_result = create_image_view(texture_image_, vk::Format::eR8G8B8A8Srgb);
+        auto view_result =
+            create_image_view(texture_image_, vk::Format::eR8G8B8A8Srgb, vk::ImageAspectFlagBits::eColor);
         if (!view_result.has_value()) {
             return std::unexpected(view_result.error());
         }
@@ -1091,8 +1165,8 @@ private:
         return {};
     }
 
-    [[nodiscard]] auto find_memory_type(uint32_t type_filter,
-                                        vk::MemoryPropertyFlags properties) const noexcept -> std::optional<uint32_t> {
+    [[nodiscard]] auto find_memory_type(uint32_t type_filter, vk::MemoryPropertyFlags properties) const noexcept
+        -> std::optional<uint32_t> {
         auto memory_properties = physical_device_.getMemoryProperties();
         for (uint32_t i = 0; i < memory_properties.memoryTypeCount; ++i) {
             if ((type_filter & (1U << i)) &&
@@ -1143,8 +1217,8 @@ private:
         return BufferAllocation{.buffer = std::move(*buffer_result), .memory = std::move(*memory_result)};
     }
 
-    auto
-    copy_buffer(const vk::raii::Buffer& src, const vk::raii::Buffer& dst, vk::DeviceSize size) noexcept -> Result<> {
+    auto copy_buffer(const vk::raii::Buffer& src, const vk::raii::Buffer& dst, vk::DeviceSize size) noexcept
+        -> Result<> {
         auto cmd_result = begin_single_time_commands();
         if (!cmd_result.has_value()) {
             return std::unexpected(cmd_result.error());
@@ -1157,8 +1231,72 @@ private:
         return {};
     }
 
+    auto load_model() noexcept -> Result<> {
+        tinyobj::attrib_t attrib;
+        std::vector<tinyobj::shape_t> shapes;
+        std::vector<tinyobj::material_t> materials;
+        std::string err;
+
+        if (!tinyobj::LoadObj(&attrib, &shapes, &materials, &err, MODEL_PATH.data(), nullptr, true)) {
+            return std::unexpected(Error{
+                .code = ErrorCode::ModelLoadFailed,
+                .message = std::format("Failed to load model: {}", err),
+            });
+        }
+
+        size_t total_indices = 0;
+        for (const auto& shape : shapes) {
+            total_indices += shape.mesh.indices.size();
+        }
+
+        vertices_.clear();
+        indices_.clear();
+
+        vertices_.reserve(total_indices);
+        indices_.reserve(total_indices);
+
+        std::unordered_map<Vertex, uint32_t> unique_vertices;
+        unique_vertices.reserve(total_indices);
+        unique_vertices.max_load_factor(0.7f);
+
+        for (const auto& shape : shapes) {
+            for (const auto& idx : shape.mesh.indices) {
+                Vertex v{};
+
+                const int vi = 3 * idx.vertex_index;
+                v.pos = {
+                    attrib.vertices[vi + 0],
+                    attrib.vertices[vi + 1],
+                    attrib.vertices[vi + 2],
+                };
+
+                if (idx.texcoord_index >= 0) {
+                    const int ti = 2 * idx.texcoord_index;
+                    v.tex_coord = {
+                        attrib.texcoords[ti + 0],
+                        1.0f - attrib.texcoords[ti + 1],
+                    };
+                } else {
+                    v.tex_coord = {0.0f, 0.0f};
+                }
+
+                if (auto it = unique_vertices.find(v); it != unique_vertices.end()) {
+                    indices_.emplace_back(it->second);
+                } else {
+                    uint32_t new_index = static_cast<uint32_t>(vertices_.size());
+                    unique_vertices.emplace(v, new_index);
+
+                    vertices_.emplace_back(v);
+                    indices_.emplace_back(new_index);
+                }
+            }
+        }
+
+        return {};
+    }
+
     auto create_vertex_buffer() noexcept -> Result<> {
-        vk::DeviceSize buffer_size = sizeof(VERTICES[0]) * VERTICES.size();
+        vk::DeviceSize buffer_size = sizeof(vertices_[0]) * vertices_.size();
 
         auto staging =
             create_buffer(buffer_size,
@@ -1169,7 +1307,7 @@ private:
         }
 
         void* data = staging->memory.mapMemory(0, buffer_size);
-        std::memcpy(data, VERTICES.data(), static_cast<size_t>(buffer_size));
+        std::memcpy(data, vertices_.data(), static_cast<size_t>(buffer_size));
         staging->memory.unmapMemory();
 
         auto vertex = create_buffer(buffer_size,
@@ -1190,7 +1328,7 @@ private:
     }
 
     auto create_index_buffer() noexcept -> Result<> {
-        vk::DeviceSize buffer_size = sizeof(INDICES[0]) * INDICES.size();
+        vk::DeviceSize buffer_size = sizeof(indices_[0]) * indices_.size();
 
         auto staging =
             create_buffer(buffer_size,
@@ -1201,7 +1339,7 @@ private:
         }
 
         void* data = staging->memory.mapMemory(0, buffer_size);
-        std::memcpy(data, INDICES.data(), static_cast<size_t>(buffer_size));
+        std::memcpy(data, indices_.data(), static_cast<size_t>(buffer_size));
         staging->memory.unmapMemory();
 
         auto index = create_buffer(buffer_size,
@@ -1375,13 +1513,14 @@ private:
     }
 
     auto transition_image_layout(const vk::raii::CommandBuffer& cmd,
-                                 uint32_t image_index,
+                                 vk::Image image,
                                  vk::ImageLayout old_layout,
                                  vk::ImageLayout new_layout,
                                  vk::AccessFlags2 src_access,
                                  vk::AccessFlags2 dst_access,
                                  vk::PipelineStageFlags2 src_stage,
-                                 vk::PipelineStageFlags2 dst_stage) const noexcept -> void {
+                                 vk::PipelineStageFlags2 dst_stage,
+                                 vk::ImageAspectFlags aspect_flags) const noexcept -> void {
         const vk::ImageMemoryBarrier2 barrier{
             .srcStageMask = src_stage,
             .srcAccessMask = src_access,
@@ -1391,21 +1530,40 @@ private:
             .newLayout = new_layout,
             .srcQueueFamilyIndex = vk::QueueFamilyIgnored,
             .dstQueueFamilyIndex = vk::QueueFamilyIgnored,
-            .image = swapchain_images_[image_index],
+            .image = image,
             .subresourceRange =
                 {
-                    .aspectMask = vk::ImageAspectFlagBits::eColor,
+                    .aspectMask = aspect_flags,
                     .baseMipLevel = 0,
                     .levelCount = 1,
                     .baseArrayLayer = 0,
                     .layerCount = 1,
                 },
         };
-
         cmd.pipelineBarrier2(vk::DependencyInfo{
             .imageMemoryBarrierCount = 1,
             .pImageMemoryBarriers = &barrier,
         });
+    }
+
+    auto transition_image_layout(const vk::raii::CommandBuffer& cmd,
+                                 uint32_t image_index,
+                                 vk::ImageLayout old_layout,
+                                 vk::ImageLayout new_layout,
+                                 vk::AccessFlags2 src_access,
+                                 vk::AccessFlags2 dst_access,
+                                 vk::PipelineStageFlags2 src_stage,
+                                 vk::PipelineStageFlags2 dst_stage,
+                                 vk::ImageAspectFlags aspect_flags) const noexcept -> void {
+        transition_image_layout(cmd,
+                                swapchain_images_[image_index],
+                                old_layout,
+                                new_layout,
+                                src_access,
+                                dst_access,
+                                src_stage,
+                                dst_stage,
+                                aspect_flags);
     }
 
     auto record_command_buffer(const vk::raii::CommandBuffer& cmd, uint32_t image_index) noexcept -> Result<> {
@@ -1418,9 +1576,23 @@ private:
                                 {},
                                 vk::AccessFlagBits2::eColorAttachmentWrite,
                                 vk::PipelineStageFlagBits2::eColorAttachmentOutput,
-                                vk::PipelineStageFlagBits2::eColorAttachmentOutput);
+                                vk::PipelineStageFlagBits2::eColorAttachmentOutput,
+                                vk::ImageAspectFlagBits::eColor);
+
+        transition_image_layout(
+            cmd,
+            *depth_image_,
+            vk::ImageLayout::eUndefined,
+            vk::ImageLayout::eDepthAttachmentOptimal,
+            vk::AccessFlagBits2::eDepthStencilAttachmentWrite,
+            vk::AccessFlagBits2::eDepthStencilAttachmentWrite,
+            vk::PipelineStageFlagBits2::eEarlyFragmentTests | vk::PipelineStageFlagBits2::eLateFragmentTests,
+            vk::PipelineStageFlagBits2::eEarlyFragmentTests | vk::PipelineStageFlagBits2::eLateFragmentTests,
+            vk::ImageAspectFlagBits::eDepth);
 
         constexpr vk::ClearValue clear_color{vk::ClearColorValue{0.0F, 0.0F, 0.0F, 1.0F}};
+
+        const vk::ClearValue clear_depth{vk::ClearDepthStencilValue{1.0F, 0}};
 
         const vk::RenderingAttachmentInfo color_attachment{
             .imageView = *swapchain_image_views_[image_index],
@@ -1430,11 +1602,20 @@ private:
             .clearValue = clear_color,
         };
 
+        const vk::RenderingAttachmentInfo depth_attachment{
+            .imageView = *depth_image_view_,
+            .imageLayout = vk::ImageLayout::eDepthAttachmentOptimal,
+            .loadOp = vk::AttachmentLoadOp::eClear,
+            .storeOp = vk::AttachmentStoreOp::eDontCare,
+            .clearValue = clear_depth,
+        };
+
         cmd.beginRendering(vk::RenderingInfo{
             .renderArea = {.offset = {.x = 0, .y = 0}, .extent = swapchain_extent_},
             .layerCount = 1,
             .colorAttachmentCount = 1,
             .pColorAttachments = &color_attachment,
+            .pDepthAttachment = &depth_attachment,
         });
 
         cmd.bindPipeline(vk::PipelineBindPoint::eGraphics, *graphics_pipeline_);
@@ -1451,12 +1632,12 @@ private:
         cmd.setScissor(0, vk::Rect2D{.offset = {0, 0}, .extent = swapchain_extent_});
 
         cmd.bindVertexBuffers(0, {*vertex_buffer_}, {0ULL});
-        cmd.bindIndexBuffer(*index_buffer_, 0, vk::IndexType::eUint16);
+        cmd.bindIndexBuffer(*index_buffer_, 0, vk::IndexType::eUint32);
 
         cmd.bindDescriptorSets(
             vk::PipelineBindPoint::eGraphics, *pipeline_layout_, 0, {*descriptor_sets_[current_frame_]}, nullptr);
 
-        cmd.drawIndexed(static_cast<uint32_t>(INDICES.size()), 1, 0, 0, 0);
+        cmd.drawIndexed(static_cast<uint32_t>(indices_.size()), 1, 0, 0, 0);
 
         cmd.endRendering();
 
@@ -1467,7 +1648,8 @@ private:
                                 vk::AccessFlagBits2::eColorAttachmentWrite,
                                 {},
                                 vk::PipelineStageFlagBits2::eColorAttachmentOutput,
-                                vk::PipelineStageFlagBits2::eBottomOfPipe);
+                                vk::PipelineStageFlagBits2::eBottomOfPipe,
+                                vk::ImageAspectFlagBits::eColor);
 
         cmd.end();
         return {};
@@ -1600,8 +1782,8 @@ private:
         return {};
     }
 
-    [[nodiscard]] auto
-    create_shader_module(const std::vector<std::byte>& code) noexcept -> Result<vk::raii::ShaderModule> {
+    [[nodiscard]] auto create_shader_module(const std::vector<std::byte>& code) noexcept
+        -> Result<vk::raii::ShaderModule> {
         vk::ShaderModuleCreateInfo create_info{
             .codeSize = code.size(),
             .pCode = reinterpret_cast<const uint32_t*>(code.data()),
@@ -1690,8 +1872,38 @@ private:
                dynamic_features.extendedDynamicState;
     }
 
-    [[nodiscard]] auto
-    query_swapchain_support(const vk::raii::PhysicalDevice& device) const noexcept -> SwapChainSupportDetails {
+    [[nodiscard]] auto find_supported_format(std::span<const vk::Format> candidates,
+                                             vk::ImageTiling tiling,
+                                             vk::FormatFeatureFlags features) const noexcept
+        -> std::optional<vk::Format> {
+        for (const auto format : candidates) {
+            const auto props = physical_device_.getFormatProperties(format);
+            const auto supported = (tiling == vk::ImageTiling::eLinear)
+                                       ? (props.linearTilingFeatures & features) == features
+                                       : (props.optimalTilingFeatures & features) == features;
+            if (supported) {
+                return format;
+            }
+        }
+        return std::nullopt;
+    }
+
+    [[nodiscard]] auto find_depth_format() const noexcept -> std::optional<vk::Format> {
+        constexpr std::array candidates{
+            vk::Format::eD32Sfloat,
+            vk::Format::eD32SfloatS8Uint,
+            vk::Format::eD24UnormS8Uint,
+        };
+        return find_supported_format(
+            candidates, vk::ImageTiling::eOptimal, vk::FormatFeatureFlagBits::eDepthStencilAttachment);
+    }
+
+    [[nodiscard]] static constexpr auto has_stencil_component(vk::Format format) noexcept -> bool {
+        return format == vk::Format::eD32SfloatS8Uint || format == vk::Format::eD24UnormS8Uint;
+    }
+
+    [[nodiscard]] auto query_swapchain_support(const vk::raii::PhysicalDevice& device) const noexcept
+        -> SwapChainSupportDetails {
         return SwapChainSupportDetails{
             .capabilities = device.getSurfaceCapabilitiesKHR(*surface_),
             .formats = device.getSurfaceFormatsKHR(*surface_),
@@ -1699,22 +1911,22 @@ private:
         };
     }
 
-    [[nodiscard]] static auto
-    choose_swap_surface_format(std::span<const vk::SurfaceFormatKHR> formats) noexcept -> vk::SurfaceFormatKHR {
+    [[nodiscard]] static auto choose_swap_surface_format(std::span<const vk::SurfaceFormatKHR> formats) noexcept
+        -> vk::SurfaceFormatKHR {
         const auto it = std::ranges::find_if(formats, [](const auto& f) {
             return f.format == vk::Format::eB8G8R8A8Srgb && f.colorSpace == vk::ColorSpaceKHR::eSrgbNonlinear;
         });
         return it != formats.end() ? *it : formats.front();
     }
 
-    [[nodiscard]] static auto
-    choose_swap_present_mode(std::span<const vk::PresentModeKHR> present_modes) noexcept -> vk::PresentModeKHR {
+    [[nodiscard]] static auto choose_swap_present_mode(std::span<const vk::PresentModeKHR> present_modes) noexcept
+        -> vk::PresentModeKHR {
         const auto it = std::ranges::find(present_modes, vk::PresentModeKHR::eMailbox);
         return it != present_modes.end() ? *it : vk::PresentModeKHR::eFifo;
     }
 
-    [[nodiscard]] auto
-    choose_swap_extent(const vk::SurfaceCapabilitiesKHR& capabilities) const noexcept -> vk::Extent2D {
+    [[nodiscard]] auto choose_swap_extent(const vk::SurfaceCapabilitiesKHR& capabilities) const noexcept
+        -> vk::Extent2D {
         if (capabilities.currentExtent.width != std::numeric_limits<uint32_t>::max()) {
             return capabilities.currentExtent;
         }
@@ -1729,8 +1941,8 @@ private:
         };
     }
 
-    [[nodiscard]] auto
-    find_queue_families(const vk::raii::PhysicalDevice& device) const noexcept -> Result<QueueFamilyIndices> {
+    [[nodiscard]] auto find_queue_families(const vk::raii::PhysicalDevice& device) const noexcept
+        -> Result<QueueFamilyIndices> {
         QueueFamilyIndices indices{};
         const auto queue_families = device.getQueueFamilyProperties();
 
@@ -1871,19 +2083,25 @@ private:
 
     vk::raii::SwapchainKHR swapchain_{nullptr};
     std::vector<vk::Image> swapchain_images_;
-    std::vector<vk::raii::ImageView> swapchain_image_views_;
     vk::Format swapchain_format_ = vk::Format::eUndefined;
     vk::Extent2D swapchain_extent_{};
+    std::vector<vk::raii::ImageView> swapchain_image_views_;
 
     vk::raii::DescriptorSetLayout descriptor_set_layout_{nullptr};
     vk::raii::PipelineLayout pipeline_layout_{nullptr};
     vk::raii::Pipeline graphics_pipeline_{nullptr};
+
+    vk::raii::Image depth_image_{nullptr};
+    vk::raii::DeviceMemory depth_image_memory_{nullptr};
+    vk::raii::ImageView depth_image_view_{nullptr};
 
     vk::raii::Image texture_image_{nullptr};
     vk::raii::DeviceMemory texture_image_memory_{nullptr};
     vk::raii::ImageView texture_image_view_{nullptr};
     vk::raii::Sampler texture_sampler_{nullptr};
 
+    std::vector<Vertex> vertices_;
+    std::vector<uint32_t> indices_;
     vk::raii::Buffer vertex_buffer_{nullptr};
     vk::raii::DeviceMemory vertex_buffer_memory_{nullptr};
     vk::raii::Buffer index_buffer_{nullptr};
